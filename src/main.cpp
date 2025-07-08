@@ -21,8 +21,10 @@
 #include "lvgl.h"
 
 // Application Framework
-#include "apps/app_manager.h"
-#include "apps/meshtastic/meshtastic_app.h"
+#include "core/apps/app_manager.h"
+#include "apps/meshtastic_app.h"
+#include "apps/file_manager_app.h"
+#include "apps/settings_app.h"
 
 // Communication Stack
 #include "core/communication/communication_manager.h"
@@ -283,11 +285,20 @@ void setup_communication() {
 void setup_applications() {
     LOG_INFO("Initializing applications");
     
-    // TODO: Initialize application manager
-    // TODO: Load installed applications
-    // TODO: Initialize Meshtastic app
+    // Initialize application manager
+    AppManager& appManager = AppManager::getInstance();
+    appManager.initialize();
     
-    LOG_INFO("Applications initialized");
+    // Register core applications
+    REGISTER_APP(MeshtasticApp, "meshtastic", true);
+    REGISTER_APP(FileManagerApp, "file_manager", false);
+    REGISTER_APP(SettingsApp, "settings", false);
+    
+    // Auto-start applications
+    appManager.autoStartApps();
+    
+    LOG_INFO("Applications initialized - %d apps registered",
+             appManager.getRegisteredApps().size());
 }
 
 /**
@@ -297,8 +308,12 @@ void main_task(void* parameter) {
     LOG_INFO("Main task started");
     
     const TickType_t xDelay = pdMS_TO_TICKS(1000); // 1 second
+    AppManager& appManager = AppManager::getInstance();
     
     while (1) {
+        // Update application manager
+        appManager.update();
+        
         // System monitoring and maintenance
         
         // Check memory usage
@@ -307,6 +322,7 @@ void main_task(void* parameter) {
         
         if (free_heap < 50000) { // Less than 50KB free
             LOG_WARN("Low memory warning: %d bytes free", free_heap);
+            appManager.handleMemoryWarning();
         }
         
         // Check power status
@@ -322,9 +338,18 @@ void main_task(void* parameter) {
         
         if (task_counter % 60 == 0) { // Every minute
             log_flush();
+            
+            // Log system statistics
+            AppManager::SystemStats stats = appManager.getSystemStats();
+            LOG_INFO("System Stats - Apps: %d/%d, Memory: %d KB, Uptime: %d min",
+                     stats.runningApps, stats.totalApps,
+                     stats.totalMemoryUsed / 1024,
+                     stats.uptime / 60000);
         }
         
         if (task_counter % 300 == 0) { // Every 5 minutes
+            // Save application configurations
+            appManager.saveSystemConfig();
             // TODO: Sync with server
             // TODO: Check for OTA updates
         }
