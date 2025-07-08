@@ -25,9 +25,10 @@
 #include "apps/meshtastic/meshtastic_app.h"
 
 // Communication Stack
-#include "comm/lora_manager.h"
-#include "comm/wifi_manager.h"
-#include "comm/cellular_manager.h"
+#include "core/communication/communication_manager.h"
+#include "core/communication/lora_manager.h"
+#include "core/communication/wifi_manager.h"
+#include "core/communication/cellular_manager.h"
 
 // System Services
 #include "services/power_manager.h"
@@ -260,15 +261,20 @@ void setup_filesystem() {
 void setup_communication() {
     LOG_INFO("Initializing communication systems");
     
-    // Initialize WiFi (but don't connect yet)
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
+    // Initialize communication manager (handles all interfaces)
+    CommunicationManager* commMgr = CommunicationManager::getInstance();
+    if (!commMgr->initialize()) {
+        LOG_ERROR("Failed to initialize communication manager");
+        return;
+    }
     
-    // TODO: Initialize LoRa manager
-    // TODO: Initialize cellular manager
-    // TODO: Initialize Bluetooth
+    // Set preferred interface to WiFi
+    commMgr->setPreferredInterface(COMM_INTERFACE_WIFI);
     
-    LOG_INFO("Communication systems initialized");
+    // Enable auto failover
+    commMgr->setAutoFailover(true);
+    
+    LOG_INFO("Communication systems initialized successfully");
 }
 
 /**
@@ -352,13 +358,51 @@ void ui_task(void* parameter) {
 void comm_task(void* parameter) {
     LOG_INFO("Communication task started");
     
-    const TickType_t xDelay = pdMS_TO_TICKS(100); // 100ms
+    const TickType_t xDelay = pdMS_TO_TICKS(1000); // 1 second
+    CommunicationManager* commMgr = CommunicationManager::getInstance();
+    
+    // Buffer for receiving messages
+    uint8_t rxBuffer[256];
+    size_t receivedLength;
+    comm_interface_t sourceInterface;
+    
+    // Test message counter
+    uint32_t messageCounter = 0;
     
     while (1) {
-        // TODO: Handle LoRa messages
-        // TODO: Handle WiFi events
-        // TODO: Handle cellular events
-        // TODO: Handle Bluetooth events
+        // Check for incoming messages
+        if (commMgr->receiveMessage(rxBuffer, sizeof(rxBuffer), &receivedLength, &sourceInterface)) {
+            LOG_INFO("Received message (%d bytes) from interface %d", receivedLength, sourceInterface);
+            // TODO: Process received message
+        }
+        
+        // Send periodic test message every 30 seconds
+        static uint32_t lastTestMessage = 0;
+        uint32_t currentTime = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        
+        if (currentTime - lastTestMessage >= 30000) {
+            char testMessage[64];
+            snprintf(testMessage, sizeof(testMessage), "Test message #%lu from T-Deck-Pro", messageCounter++);
+            
+            if (commMgr->sendMessage((uint8_t*)testMessage, strlen(testMessage), COMM_INTERFACE_AUTO)) {
+                LOG_INFO("Sent test message: %s", testMessage);
+            } else {
+                LOG_WARN("Failed to send test message");
+            }
+            
+            lastTestMessage = currentTime;
+        }
+        
+        // Log communication statistics every 60 seconds
+        static uint32_t lastStatsLog = 0;
+        if (currentTime - lastStatsLog >= 60000) {
+            comm_stats_t stats = commMgr->getStatistics();
+            LOG_INFO("Communication Stats - LoRa: %lu/%lu msgs, WiFi: %lu/%lu msgs, Cellular: %lu/%lu msgs",
+                     stats.lora.messagesSent, stats.lora.messagesReceived,
+                     stats.wifi.messagesSent, stats.wifi.messagesReceived,
+                     stats.cellular.messagesSent, stats.cellular.messagesReceived);
+            lastStatsLog = currentTime;
+        }
         
         vTaskDelay(xDelay);
     }

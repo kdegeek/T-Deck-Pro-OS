@@ -95,6 +95,15 @@
 #define BOARD_MODEM_INIT_MS     5000
 #define BOARD_EPD_INIT_MS       2000
 
+// ===== TASK PRIORITIES =====
+#define UI_TASK_PRIORITY           (configMAX_PRIORITIES - 1)
+#define DISPLAY_TASK_PRIORITY      (configMAX_PRIORITIES - 2)
+#define INPUT_TASK_PRIORITY        (configMAX_PRIORITIES - 3)
+#define LORA_TASK_PRIORITY         (configMAX_PRIORITIES - 4)
+#define WIFI_TASK_PRIORITY         (configMAX_PRIORITIES - 5)
+#define CELLULAR_TASK_PRIORITY     (configMAX_PRIORITIES - 6)
+#define SYSTEM_TASK_PRIORITY       (configMAX_PRIORITIES - 7)
+
 // ===== MEMORY ALLOCATION =====
 #define BOARD_HEAP_SIZE         (200 * 1024)  // 200KB for heap
 #define BOARD_STACK_SIZE        (8 * 1024)    // 8KB default stack
