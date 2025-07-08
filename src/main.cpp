@@ -1,6 +1,6 @@
 /**
- * @file main.cpp
- * @brief T-Deck-Pro OS Main Application Entry Point
+ * @file main_updated.cpp
+ * @brief T-Deck-Pro OS Main Application with Complete Integration
  * @author T-Deck-Pro OS Team
  * @date 2025
  */
@@ -8,6 +8,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <SPIFFS.h>
+#include <SD.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_task_wdt.h>
@@ -16,6 +17,9 @@
 #include "core/hal/board_config.h"
 #include "core/utils/logger.h"
 #include "core/display/eink_manager.h"
+#include "core/storage/storage_manager.h"
+#include "core/ui/launcher.h"
+#include "core/server/server_integration.h"
 
 // LVGL Configuration
 #include "lvgl.h"
@@ -28,28 +32,32 @@
 
 // Communication Stack
 #include "core/communication/communication_manager.h"
-#include "core/communication/lora_manager.h"
-#include "core/communication/wifi_manager.h"
-#include "core/communication/cellular_manager.h"
-
-// System Services
-#include "services/power_manager.h"
-#include "services/file_manager.h"
-#include "services/ota_manager.h"
 
 // ===== GLOBAL VARIABLES =====
 static TaskHandle_t main_task_handle = NULL;
 static TaskHandle_t ui_task_handle = NULL;
 static TaskHandle_t comm_task_handle = NULL;
+static TaskHandle_t server_task_handle = NULL;
+
+static bool systemInitialized = false;
+static bool launcherActive = false;
 
 // ===== FUNCTION DECLARATIONS =====
 void setup_hardware(void);
-void setup_filesystem(void);
+void setup_storage(void);
 void setup_communication(void);
+void setup_server_integration(void);
 void setup_applications(void);
+void setup_launcher(void);
 void main_task(void* parameter);
 void ui_task(void* parameter);
 void comm_task(void* parameter);
+void server_task(void* parameter);
+
+// Server event handlers
+void onServerConfigUpdate(const JsonObject& config);
+void onServerOTAUpdate(const OTAUpdate& ota);
+void onServerAppCommand(const AppCommand& command);
 
 // ===== LVGL TICK CALLBACK =====
 static void lv_tick_task(void* arg) {
@@ -58,7 +66,7 @@ static void lv_tick_task(void* arg) {
 }
 
 /**
- * @brief Arduino setup function - System initialization
+ * @brief Arduino setup function - Complete system initialization
  */
 void setup() {
     // Initialize serial communication
@@ -67,7 +75,7 @@ void setup() {
         delay(10);
     }
     
-    Serial.println("\n=== T-Deck-Pro OS Starting ===");
+    Serial.println("\n=== T-Deck-Pro OS v2.0 Starting ===");
     Serial.printf("Build: %s %s\n", __DATE__, __TIME__);
     Serial.printf("ESP32-S3 Chip: %s\n", ESP.getChipModel());
     Serial.printf("CPU Frequency: %d MHz\n", ESP.getCpuFreqMHz());
@@ -77,7 +85,7 @@ void setup() {
     // Initialize logging system
     log_config_t log_config = {
         .level = LOG_LEVEL_INFO,
-        .destinations = LOG_DEST_SERIAL,
+        .destinations = LOG_DEST_SERIAL | LOG_DEST_FILE,
         .include_timestamp = true,
         .include_function = true,
         .include_line_number = true,
@@ -90,23 +98,20 @@ void setup() {
         Serial.println("WARNING: Failed to initialize logging system");
     }
     
-    LOG_INFO("T-Deck-Pro OS initialization started");
+    LOG_INFO("T-Deck-Pro OS v2.0 initialization started");
     
-    // Initialize hardware
+    // Phase 1: Hardware initialization
     setup_hardware();
     
-    // Initialize filesystem
-    setup_filesystem();
+    // Phase 2: Storage system initialization
+    setup_storage();
     
-    // Initialize LVGL
+    // Phase 3: Initialize LVGL and display
     lv_init();
     
-    // Initialize E-ink display
     if (!eink_manager.initialize()) {
         LOG_ERROR("Failed to initialize E-ink display");
-        while (1) {
-            delay(1000);
-        }
+        while (1) delay(1000);
     }
     
     // Setup LVGL tick
@@ -118,13 +123,19 @@ void setup() {
     esp_timer_create(&lvgl_tick_timer_args, &lvgl_tick_timer);
     esp_timer_start_periodic(lvgl_tick_timer, portTICK_PERIOD_MS * 1000);
     
-    // Initialize communication systems
+    // Phase 4: Communication systems
     setup_communication();
     
-    // Initialize applications
+    // Phase 5: Server integration
+    setup_server_integration();
+    
+    // Phase 6: Application framework
     setup_applications();
     
-    // Create main tasks
+    // Phase 7: Launcher UI
+    setup_launcher();
+    
+    // Create system tasks
     xTaskCreatePinnedToCore(
         main_task,
         "main_task",
@@ -140,7 +151,7 @@ void setup() {
         "ui_task",
         16384,
         NULL,
-        2,
+        3,  // Higher priority for UI responsiveness
         &ui_task_handle,
         1
     );
@@ -150,8 +161,18 @@ void setup() {
         "comm_task",
         8192,
         NULL,
-        1,
+        2,
         &comm_task_handle,
+        0
+    );
+    
+    xTaskCreatePinnedToCore(
+        server_task,
+        "server_task",
+        8192,
+        NULL,
+        2,
+        &server_task_handle,
         0
     );
     
@@ -165,22 +186,27 @@ void setup() {
         NULL
     );
     
-    LOG_INFO("T-Deck-Pro OS initialization completed");
-    Serial.println("=== System Ready ===\n");
+    systemInitialized = true;
+    LOG_INFO("T-Deck-Pro OS v2.0 initialization completed");
+    Serial.println("=== System Ready - Launcher Active ===\n");
 }
 
 /**
- * @brief Arduino loop function - Main system loop
+ * @brief Arduino loop function - System monitoring
  */
 void loop() {
-    // Main loop is handled by FreeRTOS tasks
-    // This loop just handles watchdog and basic housekeeping
-    
     static uint32_t last_heartbeat = 0;
     uint32_t current_time = millis();
     
     if (current_time - last_heartbeat >= 30000) { // 30 second heartbeat
-        LOG_DEBUG("System heartbeat - Free heap: %d bytes", ESP.getFreeHeap());
+        size_t free_heap = ESP.getFreeHeap();
+        StorageStats storage = STORAGE_MGR.getStorageStats();
+        
+        LOG_DEBUG("System heartbeat - Free heap: %d KB, Flash: %.1f%%, SD: %.1f%%", 
+                 free_heap / 1024,
+                 STORAGE_MGR.getFlashUsagePercent(),
+                 STORAGE_MGR.getSDUsagePercent());
+        
         last_heartbeat = current_time;
     }
     
@@ -197,13 +223,11 @@ void loop() {
 void setup_hardware() {
     LOG_INFO("Initializing hardware components");
     
-    // Initialize board configuration
     if (!board_init()) {
         LOG_ERROR("Failed to initialize board hardware");
         while (1) delay(1000);
     }
     
-    // Initialize power management
     if (!board_set_power_state(BOARD_POWER_ACTIVE)) {
         LOG_WARN("Failed to set initial power state");
     }
@@ -223,38 +247,36 @@ void setup_hardware() {
 }
 
 /**
- * @brief Initialize filesystem
+ * @brief Initialize storage systems (Flash + SD Card)
  */
-void setup_filesystem() {
-    LOG_INFO("Initializing filesystem");
+void setup_storage() {
+    LOG_INFO("Initializing storage systems");
     
-    // Initialize SPIFFS
-    if (!SPIFFS.begin(true)) {
-        LOG_ERROR("Failed to initialize SPIFFS");
-        return;
-    }
-    
-    // Create necessary directories
-    if (!SPIFFS.exists("/apps")) {
-        SPIFFS.mkdir("/apps");
-    }
-    if (!SPIFFS.exists("/logs")) {
-        SPIFFS.mkdir("/logs");
-    }
-    if (!SPIFFS.exists("/config")) {
-        SPIFFS.mkdir("/config");
-    }
-    if (!SPIFFS.exists("/data")) {
-        SPIFFS.mkdir("/data");
+    if (!STORAGE_MGR.initialize()) {
+        LOG_ERROR("Failed to initialize storage manager");
+        while (1) delay(1000);
     }
     
-    // Log filesystem info
-    size_t total_bytes = SPIFFS.totalBytes();
-    size_t used_bytes = SPIFFS.usedBytes();
-    LOG_INFO("SPIFFS: %d/%d bytes used (%.1f%%)", 
-             used_bytes, total_bytes, (float)used_bytes / total_bytes * 100.0);
+    // Create essential directories
+    STORAGE_MGR.createDirectory(STORAGE_PATH_APPS, STORAGE_AUTO);
+    STORAGE_MGR.createDirectory(STORAGE_PATH_DATA, STORAGE_AUTO);
+    STORAGE_MGR.createDirectory(STORAGE_PATH_CONFIG, STORAGE_FLASH);
+    STORAGE_MGR.createDirectory(STORAGE_PATH_LOGS, STORAGE_FLASH);
+    STORAGE_MGR.createDirectory(STORAGE_PATH_TEMP, STORAGE_AUTO);
+    STORAGE_MGR.createDirectory(STORAGE_PATH_CACHE, STORAGE_AUTO);
     
-    LOG_INFO("Filesystem initialization completed");
+    // Set storage priorities
+    STORAGE_MGR.setStoragePriority(STORAGE_PRIORITY_BALANCED);
+    STORAGE_MGR.setFlashThresholds(0.8, 0.95); // 80% warning, 95% critical
+    
+    // Optimize storage on startup
+    STORAGE_MGR.optimizeStorage();
+    STORAGE_MGR.cleanupTempFiles();
+    
+    StorageStats stats = STORAGE_MGR.getStorageStats();
+    LOG_INFO("Storage initialized - Flash: %d/%d KB (%.1f%%), SD: %d/%d KB (%.1f%%)",
+             stats.flashUsed / 1024, stats.flashTotal / 1024, STORAGE_MGR.getFlashUsagePercent(),
+             stats.sdUsed / 1024, stats.sdTotal / 1024, STORAGE_MGR.getSDUsagePercent());
 }
 
 /**
@@ -263,20 +285,48 @@ void setup_filesystem() {
 void setup_communication() {
     LOG_INFO("Initializing communication systems");
     
-    // Initialize communication manager (handles all interfaces)
     CommunicationManager* commMgr = CommunicationManager::getInstance();
     if (!commMgr->initialize()) {
         LOG_ERROR("Failed to initialize communication manager");
         return;
     }
     
-    // Set preferred interface to WiFi
     commMgr->setPreferredInterface(COMM_INTERFACE_WIFI);
-    
-    // Enable auto failover
     commMgr->setAutoFailover(true);
     
     LOG_INFO("Communication systems initialized successfully");
+}
+
+/**
+ * @brief Initialize server integration
+ */
+void setup_server_integration() {
+    LOG_INFO("Initializing server integration");
+    
+    // Configure server connection
+    ServerConfig serverConfig;
+    serverConfig.brokerHost = "your-tailscale-server";  // TODO: Load from config
+    serverConfig.brokerPort = 1883;
+    serverConfig.deviceId = WiFi.macAddress();
+    serverConfig.deviceType = "t-deck-pro";
+    serverConfig.autoReconnect = true;
+    serverConfig.reconnectInterval = 30;
+    serverConfig.telemetryInterval = 300;  // 5 minutes
+    serverConfig.heartbeatInterval = 60;   // 1 minute
+    serverConfig.enableOTA = true;
+    serverConfig.enableAppManagement = true;
+    serverConfig.enableMeshForwarding = true;
+    
+    // Set event handlers
+    SERVER_MGR.setConfigUpdateHandler(onServerConfigUpdate);
+    SERVER_MGR.setOTAUpdateHandler(onServerOTAUpdate);
+    SERVER_MGR.setAppCommandHandler(onServerAppCommand);
+    
+    if (!SERVER_MGR.initialize(serverConfig)) {
+        LOG_WARN("Server integration initialization failed - will retry later");
+    } else {
+        LOG_INFO("Server integration initialized successfully");
+    }
 }
 
 /**
@@ -285,14 +335,20 @@ void setup_communication() {
 void setup_applications() {
     LOG_INFO("Initializing applications");
     
-    // Initialize application manager
     AppManager& appManager = AppManager::getInstance();
     appManager.initialize();
     
-    // Register core applications
+    // Register core applications (built-in)
     REGISTER_APP(MeshtasticApp, "meshtastic", true);
     REGISTER_APP(FileManagerApp, "file_manager", false);
     REGISTER_APP(SettingsApp, "settings", false);
+    
+    // Load applications from storage
+    std::vector<String> installedApps = STORAGE_MGR.getInstalledApps();
+    for (const String& appId : installedApps) {
+        // TODO: Load and register dynamic apps from storage
+        LOG_INFO("Found installed app: %s", appId.c_str());
+    }
     
     // Auto-start applications
     appManager.autoStartApps();
@@ -302,56 +358,83 @@ void setup_applications() {
 }
 
 /**
- * @brief Main system task
+ * @brief Initialize launcher UI
+ */
+void setup_launcher() {
+    LOG_INFO("Initializing launcher UI");
+    
+    if (!LAUNCHER.initialize()) {
+        LOG_ERROR("Failed to initialize launcher");
+        while (1) delay(1000);
+    }
+    
+    // Show home screen
+    LAUNCHER.showHome();
+    launcherActive = true;
+    
+    LOG_INFO("Launcher initialized and active");
+}
+
+/**
+ * @brief Main system task - System monitoring and management
  */
 void main_task(void* parameter) {
     LOG_INFO("Main task started");
     
-    const TickType_t xDelay = pdMS_TO_TICKS(1000); // 1 second
+    const TickType_t xDelay = pdMS_TO_TICKS(1000);
     AppManager& appManager = AppManager::getInstance();
     
     while (1) {
+        if (!systemInitialized) {
+            vTaskDelay(xDelay);
+            continue;
+        }
+        
         // Update application manager
         appManager.update();
         
-        // System monitoring and maintenance
+        // Update storage manager
+        static uint32_t lastStorageCheck = 0;
+        if (millis() - lastStorageCheck > 60000) { // Every minute
+            if (STORAGE_MGR.isFlashCritical()) {
+                LOG_WARN("Flash storage critical - triggering optimization");
+                STORAGE_MGR.optimizeStorage();
+                appManager.handleMemoryWarning();
+            }
+            lastStorageCheck = millis();
+        }
         
-        // Check memory usage
+        // System health monitoring
         size_t free_heap = ESP.getFreeHeap();
-        size_t min_free_heap = ESP.getMinFreeHeap();
-        
         if (free_heap < 50000) { // Less than 50KB free
             LOG_WARN("Low memory warning: %d bytes free", free_heap);
             appManager.handleMemoryWarning();
         }
         
-        // Check power status
+        // Power management
         uint16_t battery_mv = board_get_battery_voltage();
         if (battery_mv < BOARD_BAT_LOW_MV) {
             LOG_WARN("Low battery: %d mV", battery_mv);
             // TODO: Trigger power saving mode
         }
         
-        // Periodic tasks
+        // Periodic maintenance
         static uint32_t task_counter = 0;
         task_counter++;
         
         if (task_counter % 60 == 0) { // Every minute
             log_flush();
             
-            // Log system statistics
             AppManager::SystemStats stats = appManager.getSystemStats();
-            LOG_INFO("System Stats - Apps: %d/%d, Memory: %d KB, Uptime: %d min",
+            LOG_DEBUG("System Stats - Apps: %d/%d, Memory: %d KB, Uptime: %d min",
                      stats.runningApps, stats.totalApps,
                      stats.totalMemoryUsed / 1024,
                      stats.uptime / 60000);
         }
         
         if (task_counter % 300 == 0) { // Every 5 minutes
-            // Save application configurations
             appManager.saveSystemConfig();
-            // TODO: Sync with server
-            // TODO: Check for OTA updates
+            STORAGE_MGR.cleanupTempFiles();
         }
         
         vTaskDelay(xDelay);
@@ -359,7 +442,7 @@ void main_task(void* parameter) {
 }
 
 /**
- * @brief UI task - handles LVGL and display updates
+ * @brief UI task - handles LVGL, launcher, and display updates
  */
 void ui_task(void* parameter) {
     LOG_INFO("UI task started");
@@ -367,8 +450,18 @@ void ui_task(void* parameter) {
     const TickType_t xDelay = pdMS_TO_TICKS(10); // 10ms for smooth UI
     
     while (1) {
+        if (!systemInitialized) {
+            vTaskDelay(xDelay);
+            continue;
+        }
+        
         // Handle LVGL tasks
         lv_timer_handler();
+        
+        // Update launcher
+        if (launcherActive) {
+            LAUNCHER.update();
+        }
         
         // Handle E-ink display updates
         eink_task_handler();
@@ -383,52 +476,131 @@ void ui_task(void* parameter) {
 void comm_task(void* parameter) {
     LOG_INFO("Communication task started");
     
-    const TickType_t xDelay = pdMS_TO_TICKS(1000); // 1 second
+    const TickType_t xDelay = pdMS_TO_TICKS(1000);
     CommunicationManager* commMgr = CommunicationManager::getInstance();
     
-    // Buffer for receiving messages
     uint8_t rxBuffer[256];
     size_t receivedLength;
     comm_interface_t sourceInterface;
     
-    // Test message counter
-    uint32_t messageCounter = 0;
-    
     while (1) {
+        if (!systemInitialized) {
+            vTaskDelay(xDelay);
+            continue;
+        }
+        
         // Check for incoming messages
         if (commMgr->receiveMessage(rxBuffer, sizeof(rxBuffer), &receivedLength, &sourceInterface)) {
-            LOG_INFO("Received message (%d bytes) from interface %d", receivedLength, sourceInterface);
-            // TODO: Process received message
-        }
-        
-        // Send periodic test message every 30 seconds
-        static uint32_t lastTestMessage = 0;
-        uint32_t currentTime = xTaskGetTickCount() * portTICK_PERIOD_MS;
-        
-        if (currentTime - lastTestMessage >= 30000) {
-            char testMessage[64];
-            snprintf(testMessage, sizeof(testMessage), "Test message #%lu from T-Deck-Pro", messageCounter++);
+            LOG_DEBUG("Received message (%d bytes) from interface %d", receivedLength, sourceInterface);
             
-            if (commMgr->sendMessage((uint8_t*)testMessage, strlen(testMessage), COMM_INTERFACE_AUTO)) {
-                LOG_INFO("Sent test message: %s", testMessage);
-            } else {
-                LOG_WARN("Failed to send test message");
+            // Forward mesh messages to server if connected
+            if (SERVER_MGR.isConnected()) {
+                // TODO: Parse and forward mesh messages
             }
-            
-            lastTestMessage = currentTime;
         }
         
-        // Log communication statistics every 60 seconds
-        static uint32_t lastStatsLog = 0;
-        if (currentTime - lastStatsLog >= 60000) {
-            comm_stats_t stats = commMgr->getStatistics();
-            LOG_INFO("Communication Stats - LoRa: %lu/%lu msgs, WiFi: %lu/%lu msgs, Cellular: %lu/%lu msgs",
-                     stats.lora.messagesSent, stats.lora.messagesReceived,
-                     stats.wifi.messagesSent, stats.wifi.messagesReceived,
-                     stats.cellular.messagesSent, stats.cellular.messagesReceived);
-            lastStatsLog = currentTime;
+        // Update communication statistics for launcher
+        static uint32_t lastStatsUpdate = 0;
+        if (millis() - lastStatsUpdate > 5000) { // Every 5 seconds
+            if (launcherActive) {
+                StatusInfo status;
+                status.wifiConnected = WiFi.isConnected();
+                status.wifiSignal = WiFi.RSSI();
+                status.cellularConnected = false; // TODO: Get from cellular manager
+                status.loraActive = true; // TODO: Get from LoRa manager
+                status.batteryPercent = map(board_get_battery_voltage(), BOARD_BAT_CRIT_MV, BOARD_BAT_FULL_MV, 0, 100);
+                status.usbConnected = board_is_usb_connected();
+                status.serverConnected = SERVER_MGR.isConnected();
+                status.runningApps = AppManager::getInstance().getRunningApps().size();
+                
+                LAUNCHER.updateStatus(status);
+            }
+            lastStatsUpdate = millis();
         }
         
         vTaskDelay(xDelay);
+    }
+}
+
+/**
+ * @brief Server task - handles server communication and integration
+ */
+void server_task(void* parameter) {
+    LOG_INFO("Server task started");
+    
+    const TickType_t xDelay = pdMS_TO_TICKS(1000);
+    
+    while (1) {
+        if (!systemInitialized) {
+            vTaskDelay(xDelay);
+            continue;
+        }
+        
+        // Update server integration
+        SERVER_MGR.update();
+        
+        // Auto-reconnect if needed
+        if (!SERVER_MGR.isConnected() && WiFi.isConnected()) {
+            static uint32_t lastReconnectAttempt = 0;
+            if (millis() - lastReconnectAttempt > 30000) { // Try every 30 seconds
+                LOG_INFO("Attempting to reconnect to server");
+                SERVER_MGR.reconnect();
+                lastReconnectAttempt = millis();
+            }
+        }
+        
+        vTaskDelay(xDelay);
+    }
+}
+
+// ===== SERVER EVENT HANDLERS =====
+
+void onServerConfigUpdate(const JsonObject& config) {
+    LOG_INFO("Received configuration update from server");
+    
+    // Apply configuration changes
+    if (config.containsKey("telemetry_interval")) {
+        SERVER_MGR.setTelemetryInterval(config["telemetry_interval"]);
+    }
+    
+    if (config.containsKey("display_settings")) {
+        // TODO: Apply display settings
+    }
+    
+    // Show notification in launcher
+    if (launcherActive) {
+        LAUNCHER.showNotification("Configuration Updated", "Settings applied from server");
+    }
+}
+
+void onServerOTAUpdate(const OTAUpdate& ota) {
+    LOG_INFO("OTA update available: %s v%s", ota.type.c_str(), ota.version.c_str());
+    
+    if (launcherActive) {
+        String message = "Update available: " + ota.version;
+        LAUNCHER.showNotification("OTA Update", message, 10000);
+    }
+    
+    // TODO: Implement OTA update process
+}
+
+void onServerAppCommand(const AppCommand& command) {
+    LOG_INFO("App management command: %s for %s", command.action.c_str(), command.appId.c_str());
+    
+    AppManager& appManager = AppManager::getInstance();
+    
+    if (command.action == "install") {
+        // TODO: Download and install app
+        LOG_INFO("Installing app: %s", command.appId.c_str());
+    } else if (command.action == "remove") {
+        appManager.unregisterApp(command.appId);
+        STORAGE_MGR.uninstallApp(command.appId);
+    } else if (command.action == "update") {
+        // TODO: Update existing app
+    }
+    
+    // Refresh launcher app list
+    if (launcherActive) {
+        LAUNCHER.refreshApps();
     }
 }
