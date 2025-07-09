@@ -132,6 +132,27 @@ size_t AppBase::getCurrentMemoryUsage() const {
     return usage;
 }
 
+void AppBase::cleanup() {
+    // Default cleanup implementation
+    Logger::info("AppBase", "Cleaning up app: " + appInfo.name);
+    
+    // Stop the app if it's still running
+    if (currentState != AppState::STOPPED) {
+        stop();
+    }
+    
+    // Free any remaining allocated memory
+    if (memoryMutex) {
+        xSemaphoreTake(memoryMutex, portMAX_DELAY);
+        for (auto& block : allocatedMemory) {
+            free(block.ptr);
+        }
+        allocatedMemory.clear();
+        totalAllocatedMemory = 0;
+        xSemaphoreGive(memoryMutex);
+    }
+}
+
 void AppBase::destroyUI() {
     if (mainContainer) {
         lv_obj_del(mainContainer);

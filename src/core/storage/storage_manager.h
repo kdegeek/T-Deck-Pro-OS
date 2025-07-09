@@ -135,13 +135,15 @@ public:
 // Convenience macros
 #define STORAGE_MGR StorageManager::getInstance()
 
+// Add these constants after the existing includes
+
 // Storage paths
-#define STORAGE_PATH_APPS "/apps"
-#define STORAGE_PATH_DATA "/data"
-#define STORAGE_PATH_CONFIG "/config"
-#define STORAGE_PATH_LOGS "/logs"
-#define STORAGE_PATH_TEMP "/temp"
-#define STORAGE_PATH_CACHE "/cache"
+#define STORAGE_PATH_APPS     "/apps"
+#define STORAGE_PATH_DATA     "/data"
+#define STORAGE_PATH_CONFIG   "/config"
+#define STORAGE_PATH_LOGS     "/logs"
+#define STORAGE_PATH_TEMP     "/temp"
+#define STORAGE_PATH_CACHE    "/cache"
 
 // App storage structure
 #define APP_MANIFEST_FILE "manifest.json"

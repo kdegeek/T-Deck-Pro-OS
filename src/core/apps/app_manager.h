@@ -171,10 +171,12 @@ struct AppMessage {
 /**
  * @brief Helper macros for app registration
  */
+// Fix the REGISTER_APP macro implementation
 #define REGISTER_APP(appClass, appId, autoStart, ...) \
     do { \
-        auto factory = new TemplateAppFactory<appClass>(appClass::getAppInfo()); \
-        AppManager::getInstance().registerApp(appId, factory, autoStart, {__VA_ARGS__}); \
+        static appClass##Factory factory; \
+        std::vector<String> deps = {__VA_ARGS__}; \
+        AppManager::getInstance().registerApp(appId, &factory, autoStart, deps); \
     } while(0)
 
 #define GET_APP_MANAGER() AppManager::getInstance()

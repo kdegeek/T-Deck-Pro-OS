@@ -8,6 +8,9 @@
 #ifndef BOARD_CONFIG_H
 #define BOARD_CONFIG_H
 
+#include <stdint.h>
+#include <stdbool.h>
+
 // ===== DISPLAY PINS (E-ink) =====
 #define BOARD_EPD_CS        10
 #define BOARD_EPD_DC        11

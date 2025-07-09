@@ -16,32 +16,13 @@
 // Global instance
 EinkManager eink_manager;
 
-void EinkManager::lvglFlushCallback(lv_disp_drv_t* disp_drv, const lv_area_t* area, lv_color_t* color_p) {
-    // Convert LVGL color buffer to E-ink format
-    convertLvglToEink(color_p, current_buffer, area);
-    
-    // Update pixel usage tracking
-    updatePixelUsageMap(area);
-    
-    // Determine refresh strategy
-    EinkRefreshMode refresh_mode = EINK_REFRESH_PARTIAL;
-    
-    if (shouldPerformFullRefresh()) {
-        refresh_mode = EINK_REFRESH_FULL;
-        Logger::debug("EinkManager", "Performing full refresh to prevent burn-in");
-    }
-    
-    // Schedule the display update
-    scheduleUpdate(area, refresh_mode);
-    
-    // Mark flush as ready
-    lv_disp_flush_ready(disp_drv);
+// LVGL wrapper functions
+void eink_flush_wrapper(lv_disp_drv_t* disp_drv, const lv_area_t* area, lv_color_t* color_p) {
+    eink_manager.lvglFlushCallback(disp_drv, area, color_p);
 }
 
-void EinkManager::lvglRenderStartCallback(struct _lv_disp_drv_t* disp_drv) {
-    // Called when LVGL starts rendering
-    // We can use this to batch updates or prepare for refresh
-    update_pending = true;
+void eink_render_start_wrapper(struct _lv_disp_drv_t* disp_drv) {
+    eink_manager.lvglRenderStartCallback(disp_drv);
 }
 
 EinkManager::EinkManager() :
@@ -247,6 +228,79 @@ bool EinkManager::shouldPerformFullRefresh() {
     return false;
 }
 
+void EinkManager::calculateDirtyRegions(const lv_area_t* area) {
+    // Find or create a dirty region for this area
+    bool region_found = false;
+    
+    for (uint8_t i = 0; i < dirty_region_count; i++) {
+        EinkRegion* region = &dirty_regions[i];
+        
+        // Check if this area overlaps with existing dirty region
+        if (area->x1 <= region->x + region->width && area->x2 >= region->x &&
+            area->y1 <= region->y + region->height && area->y2 >= region->y) {
+            
+            // Expand the existing region to include the new area
+            int16_t new_x1 = min((int16_t)region->x, (int16_t)area->x1);
+            int16_t new_y1 = min((int16_t)region->y, (int16_t)area->y1);
+            int16_t new_x2 = max((int16_t)(region->x + region->width - 1), (int16_t)area->x2);
+            int16_t new_y2 = max((int16_t)(region->y + region->height - 1), (int16_t)area->y2);
+            
+            region->x = new_x1;
+            region->y = new_y1;
+            region->width = new_x2 - new_x1 + 1;
+            region->height = new_y2 - new_y1 + 1;
+            region->dirty = true;
+            region->update_count++;
+            
+            region_found = true;
+            break;
+        }
+    }
+    
+    // If no overlapping region found and we have space, create a new one
+    if (!region_found && dirty_region_count < 16) {
+        EinkRegion* new_region = &dirty_regions[dirty_region_count];
+        new_region->x = area->x1;
+        new_region->y = area->y1;
+        new_region->width = area->x2 - area->x1 + 1;
+        new_region->height = area->y2 - area->y1 + 1;
+        new_region->dirty = true;
+        new_region->last_update = esp_timer_get_time() / 1000;
+        new_region->update_count = 1;
+        
+        dirty_region_count++;
+    }
+}
+
+void EinkManager::optimizeRefreshRegion(lv_area_t* area) {
+    // Ensure the area is within display bounds
+    if (area->x1 < 0) area->x1 = 0;
+    if (area->y1 < 0) area->y1 = 0;
+    if (area->x2 >= EINK_WIDTH) area->x2 = EINK_WIDTH - 1;
+    if (area->y2 >= EINK_HEIGHT) area->y2 = EINK_HEIGHT - 1;
+    
+    // Align to byte boundaries for better performance
+    area->x1 = (area->x1 / 8) * 8;
+    area->x2 = ((area->x2 / 8) + 1) * 8 - 1;
+    if (area->x2 >= EINK_WIDTH) area->x2 = EINK_WIDTH - 1;
+    
+    // Ensure minimum update size to avoid too many small updates
+    int16_t min_width = 16;
+    int16_t min_height = 16;
+    
+    if ((area->x2 - area->x1 + 1) < min_width) {
+        int16_t expand = (min_width - (area->x2 - area->x1 + 1)) / 2;
+        area->x1 = max(0, (int)(area->x1 - expand));
+        area->x2 = min(EINK_WIDTH - 1, (int)(area->x2 + expand));
+    }
+    
+    if ((area->y2 - area->y1 + 1) < min_height) {
+        int16_t expand = (min_height - (area->y2 - area->y1 + 1)) / 2;
+        area->y1 = max(0, (int)(area->y1 - expand));
+        area->y2 = min(EINK_HEIGHT - 1, (int)(area->y2 + expand));
+    }
+}
+
 void EinkManager::scheduleUpdate(const lv_area_t* area, EinkRefreshMode mode) {
     // Optimize the refresh area to minimize unnecessary updates
     lv_area_t optimized_area = *area;
@@ -304,6 +358,48 @@ void EinkManager::flushDisplay(const lv_area_t* area, const uint8_t* buffer, Ein
     }
     
     display->hibernate();
+}
+
+void EinkManager::processScheduledUpdates() {
+    // Process any pending dirty regions
+    if (dirty_region_count == 0) {
+        return;
+    }
+    
+    uint32_t current_time = esp_timer_get_time() / 1000;
+    
+    for (uint8_t i = 0; i < dirty_region_count; i++) {
+        EinkRegion* region = &dirty_regions[i];
+        
+        if (region->dirty && (current_time - region->last_update) >= min_update_interval) {
+            // Create area from region
+            lv_area_t area;
+            area.x1 = region->x;
+            area.y1 = region->y;
+            area.x2 = region->x + region->width - 1;
+            area.y2 = region->y + region->height - 1;
+            
+            // Determine refresh mode based on update count
+            EinkRefreshMode mode = EINK_REFRESH_PARTIAL;
+            if (region->update_count > 10 || shouldPerformFullRefresh()) {
+                mode = EINK_REFRESH_FULL;
+            }
+            
+            // Perform the update
+            flushDisplay(&area, current_buffer, mode);
+            
+            // Mark as processed
+            region->dirty = false;
+            region->last_update = current_time;
+            
+            // Remove processed region by shifting array
+            for (uint8_t j = i; j < dirty_region_count - 1; j++) {
+                dirty_regions[j] = dirty_regions[j + 1];
+            }
+            dirty_region_count--;
+            i--; // Adjust index after removal
+        }
+    }
 }
 
 void EinkManager::performClearCycle() {

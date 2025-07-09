@@ -254,13 +254,13 @@ void setup_storage() {
 void setup_communication() {
     Logger::info(TAG, "Initializing communication systems");
     
-    auto* commMgr = CommunicationManager::getInstance();
+    auto* commMgr = TDeckOS::Communication::CommunicationManager::getInstance();
     if (!commMgr->initialize()) {
         Logger::error(TAG, "Failed to initialize communication manager");
         return;
     }
     
-    commMgr->setPreferredInterface(CommInterface::WIFI);
+    commMgr->setPreferredInterface(TDeckOS::Communication::CommInterface::WIFI);
     commMgr->setAutoFailover(true);
     
     Logger::info(TAG, "Communication systems initialized successfully");
@@ -442,11 +442,11 @@ void comm_task(void* parameter) {
     Logger::info(TAG, "Communication task started");
     
     const TickType_t xDelay = pdMS_TO_TICKS(1000);
-    auto* commMgr = CommunicationManager::getInstance();
+    auto* commMgr = TDeckOS::Communication::CommunicationManager::getInstance();
     
     uint8_t rxBuffer[256];
     size_t receivedLength;
-    CommInterface sourceInterface;
+    TDeckOS::Communication::CommInterface sourceInterface;
     
     while (1) {
         if (!systemInitialized) {

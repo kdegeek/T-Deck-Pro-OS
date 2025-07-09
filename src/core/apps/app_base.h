@@ -59,7 +59,7 @@ public:
     virtual bool pauseApp() = 0;
     virtual bool resumeApp() = 0;
     virtual bool stop() = 0;
-    virtual void cleanup() = 0;
+    virtual void cleanup();
 
     // Event handling (virtual - can be overridden)
     virtual void onKeyPress(uint8_t key) {}

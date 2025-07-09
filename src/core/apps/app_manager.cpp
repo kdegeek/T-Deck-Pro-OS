@@ -353,6 +353,145 @@ size_t AppManager::getTotalMemoryUsage() const {
     return total;
 }
 
+bool AppManager::checkMemoryLimits() {
+    if (!managerMutex) return false;
+    
+    size_t totalUsed = getTotalMemoryUsage();
+    size_t available = MAX_TOTAL_MEMORY - totalUsed;
+    
+    // Check if we're approaching memory limits
+    float usagePercent = (float)totalUsed / MAX_TOTAL_MEMORY;
+    
+    if (usagePercent > 0.9f) {
+        // Critical memory usage - force garbage collection and kill apps if needed
+        Logger::warning("AppManager", "Critical memory usage: " + String(usagePercent * 100) + "%");
+        
+        forceGarbageCollection();
+        
+        // If still critical, kill least important app
+        if (getTotalMemoryUsage() > MAX_TOTAL_MEMORY * 0.9f) {
+            killAppForMemory();
+        }
+        
+        // Trigger memory warning callback
+        if (memoryWarningCallback) {
+            memoryWarningCallback(totalUsed, available);
+        }
+        
+        return false;
+    } else if (usagePercent > 0.8f) {
+        // Warning level - just log and trigger callback
+        Logger::info("AppManager", "High memory usage: " + String(usagePercent * 100) + "%");
+        
+        if (memoryWarningCallback) {
+            memoryWarningCallback(totalUsed, available);
+        }
+    }
+    
+    return true;
+}
+
+void AppManager::forceGarbageCollection() {
+    Logger::info("AppManager", "Forcing garbage collection");
+    
+    // Trigger garbage collection on all running apps
+    for (auto& pair : runningApps) {
+        if (pair.second) {
+            pair.second->onMemoryWarning();
+        }
+    }
+    
+    // Force ESP32 heap cleanup
+    heap_caps_check_integrity_all(true);
+}
+
+void AppManager::killAppForMemory() {
+    String appToKill = findBestAppToKill();
+    
+    if (!appToKill.isEmpty()) {
+        Logger::warning("AppManager", "Killing app for memory: " + appToKill);
+        stopApp(appToKill);
+    }
+}
+
+String AppManager::findBestAppToKill() const {
+    String bestCandidate;
+    size_t highestMemoryUsage = 0;
+    
+    // Find the app using the most memory (excluding active app)
+    for (const auto& pair : runningApps) {
+        if (pair.first != activeAppId) {
+            size_t usage = pair.second->getCurrentMemoryUsage();
+            if (usage > highestMemoryUsage) {
+                highestMemoryUsage = usage;
+                bestCandidate = pair.first;
+            }
+        }
+    }
+    
+    return bestCandidate;
+}
+
+std::vector<String> AppManager::getRegisteredApps() const {
+    std::vector<String> appIds;
+    
+    if (!managerMutex) return appIds;
+    
+    xSemaphoreTake(managerMutex, portMAX_DELAY);
+    
+    for (const auto& pair : registeredApps) {
+        appIds.push_back(pair.first);
+    }
+    
+    xSemaphoreGive(managerMutex);
+    return appIds;
+}
+
+void AppManager::handleMemoryWarning() {
+    Logger::warning("AppManager", "Memory warning triggered");
+    
+    if (!managerMutex) return;
+    
+    xSemaphoreTake(managerMutex, portMAX_DELAY);
+    
+    // Notify all running apps about memory warning
+    for (auto& pair : runningApps) {
+        if (pair.second) {
+            pair.second->onMemoryWarning();
+        }
+    }
+    
+    // Force garbage collection
+    forceGarbageCollection();
+    
+    // If memory is still critical, kill an app
+    if (getTotalMemoryUsage() > MAX_TOTAL_MEMORY * 0.9f) {
+        killAppForMemory();
+    }
+    
+    xSemaphoreGive(managerMutex);
+}
+
+void AppManager::autoStartApps() {
+    if (!initialized || !managerMutex) return;
+    
+    Logger::info("AppManager", "Auto-starting registered apps");
+    
+    xSemaphoreTake(managerMutex, portMAX_DELAY);
+    
+    for (const auto& pair : registeredApps) {
+        if (pair.second.autoStart) {
+            Logger::info("AppManager", "Auto-starting app: " + pair.first);
+            LaunchResult result = launchApp(pair.first);
+            if (result != LaunchResult::SUCCESS) {
+                Logger::warning("AppManager", "Failed to auto-start app: " + pair.first);
+            }
+        }
+    }
+    
+    xSemaphoreGive(managerMutex);
+}
+
 void AppManager::onAppStateChange(AppBase* app, AppBase::AppState oldState, AppBase::AppState newState) {
     if (appStateChangeCallback) {
         String appId;

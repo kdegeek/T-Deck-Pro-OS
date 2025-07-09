@@ -694,7 +694,7 @@ bool ServerIntegration::removeApp(const String& appId) {
     
     if (result) {
         // Refresh launcher
-        Launcher* launcher = Launcher::getInstance();
+        // Launcher* launcher = Launcher::getInstance();
         // This method does not exist on Launcher, need to implement a public refresh method
         // launcher->refreshAppGrid();
     }
