@@ -3,9 +3,9 @@
 #include "core/apps/app_manager.h"
 #include "core/communication/communication_manager.h"
 
-Launcher* Launcher::instance = nullptr;
+UILauncher* UILauncher::instance = nullptr;
 
-Launcher::Launcher() : 
+UILauncher::UILauncher() : 
     initialized(false),
     currentScreen(nullptr),
     statusBar(nullptr),
@@ -27,14 +27,14 @@ Launcher::Launcher() :
     statusUpdateTimer(nullptr) {
 }
 
-Launcher* Launcher::getInstance() {
+UILauncher* UILauncher::getInstance() {
     if (!instance) {
-        instance = new Launcher();
+        instance = new UILauncher();
     }
     return instance;
 }
 
-bool Launcher::init() {
+bool UILauncher::init() {
     Logger::info("Launcher", "Initializing launcher UI...");
     
     if (!lvgl_initialized()) {
@@ -59,11 +59,11 @@ bool Launcher::init() {
     return true;
 }
 
-void Launcher::update() {
+void UILauncher::update() {
     // This function can be used for periodic updates if needed
 }
 
-void Launcher::createStatusBar() {
+void UILauncher::createStatusBar() {
     statusBar = lv_obj_create(currentScreen);
     lv_obj_set_size(statusBar, LV_HOR_RES, STATUS_BAR_HEIGHT);
     lv_obj_align(statusBar, LV_ALIGN_TOP_MID, 0, 0);
@@ -102,7 +102,7 @@ void Launcher::createStatusBar() {
     lv_label_set_text(notificationIcon, "");
 }
 
-void Launcher::createAppGrid() {
+void UILauncher::createAppGrid() {
     appGrid = lv_obj_create(currentScreen);
     lv_obj_set_size(appGrid, LV_HOR_RES, LV_VER_RES - STATUS_BAR_HEIGHT - QUICK_SETTINGS_HEIGHT);
     lv_obj_align(appGrid, LV_ALIGN_DEFAULT, 0, STATUS_BAR_HEIGHT);
@@ -117,7 +117,7 @@ void Launcher::createAppGrid() {
     lv_obj_set_scroll_dir(appContainer, LV_DIR_VER);
 }
 
-void Launcher::createQuickSettings() {
+void UILauncher::createQuickSettings() {
     quickSettings = lv_obj_create(currentScreen);
     lv_obj_set_size(quickSettings, LV_HOR_RES, QUICK_SETTINGS_HEIGHT);
     lv_obj_align(quickSettings, LV_ALIGN_BOTTOM_MID, 0, 0);
@@ -152,7 +152,7 @@ void Launcher::createQuickSettings() {
     lv_obj_center(settingsLabel);
 }
 
-void Launcher::createNotificationPanel() {
+void UILauncher::createNotificationPanel() {
     notificationPanel = lv_obj_create(currentScreen);
     lv_obj_set_size(notificationPanel, LV_HOR_RES, LV_VER_RES / 2);
     lv_obj_align(notificationPanel, LV_ALIGN_TOP_MID, 0, -LV_VER_RES); // Start hidden
@@ -167,7 +167,7 @@ void Launcher::createNotificationPanel() {
     lv_obj_align(notificationList, LV_ALIGN_BOTTOM_MID, 0, -10);
 }
 
-void Launcher::refreshAppGrid() {
+void UILauncher::refreshAppGrid() {
     if (!initialized || !appContainer) return;
 
     Logger::info("Launcher", "Refreshing app grid...");
@@ -213,7 +213,7 @@ void Launcher::refreshAppGrid() {
     Logger::info("Launcher", "App grid refreshed with " + String(apps.size()) + " apps");
 }
 
-void Launcher::updateStatus() {
+void UILauncher::updateStatus() {
     if (!initialized) return;
 
     static int hours = 12, minutes = 0, seconds = 0;
@@ -241,7 +241,7 @@ void Launcher::updateStatus() {
     }
 }
 
-void Launcher::showNotifications() {
+void UILauncher::showNotifications() {
     if (!notificationPanel) return;
     Logger::info("Launcher", "Showing notifications panel");
     lv_anim_t anim;
@@ -253,7 +253,7 @@ void Launcher::showNotifications() {
     lv_anim_start(&anim);
 }
 
-void Launcher::hideNotifications() {
+void UILauncher::hideNotifications() {
     if (!notificationPanel) return;
     Logger::info("Launcher", "Hiding notifications panel");
     lv_anim_t anim;
@@ -265,7 +265,7 @@ void Launcher::hideNotifications() {
     lv_anim_start(&anim);
 }
 
-void Launcher::addNotification(const String& title, const String& message) {
+void UILauncher::addNotification(const String& title, const String& message) {
     Logger::info("Launcher", "Adding notification: " + title);
     notifications.push_back({title, message, (uint32_t)millis()});
     if(notificationList) {
@@ -280,7 +280,7 @@ void Launcher::addNotification(const String& title, const String& message) {
     }
 }
 
-void Launcher::clearNotifications() {
+void UILauncher::clearNotifications() {
     Logger::info("Launcher", "Clearing all notifications");
     notifications.clear();
     if (notificationList) {
@@ -288,7 +288,7 @@ void Launcher::clearNotifications() {
     }
 }
 
-const char* Launcher::getAppIcon(const String& appName) {
+const char* UILauncher::getAppIcon(const String& appName) {
     if (appName == "Meshtastic") return LV_SYMBOL_WIFI;
     if (appName == "File Manager") return LV_SYMBOL_DIRECTORY;
     if (appName == "Settings") return LV_SYMBOL_SETTINGS;
@@ -296,18 +296,18 @@ const char* Launcher::getAppIcon(const String& appName) {
     return LV_SYMBOL_FILE;
 }
 
-bool Launcher::lvgl_initialized() {
+bool UILauncher::lvgl_initialized() {
     return lv_is_initialized();
 }
 
 // --- Static Callback Implementations ---
 
-void Launcher::statusUpdateCallback(lv_timer_t* timer) {
-    Launcher* launcher = (Launcher*)timer->user_data;
+void UILauncher::statusUpdateCallback(lv_timer_t* timer) {
+    UILauncher* launcher = (UILauncher*)timer->user_data;
     if(launcher) launcher->updateStatus();
 }
 
-void Launcher::appLaunchCallback(lv_event_t* e) {
+void UILauncher::appLaunchCallback(lv_event_t* e) {
     const char* appName = (const char*)lv_event_get_user_data(e);
     if (appName) {
         Logger::info("Launcher", "Launching app: " + String(appName));
@@ -315,7 +315,7 @@ void Launcher::appLaunchCallback(lv_event_t* e) {
     }
 }
 
-void Launcher::wifiToggleCallback(lv_event_t* e) {
+void UILauncher::wifiToggleCallback(lv_event_t* e) {
     using TDeckOS::Communication::CommunicationManager;
     CommunicationManager* comm = CommunicationManager::getInstance();
     bool enabled = comm->isInterfaceEnabled(TDeckOS::Communication::CommInterface::WIFI);
@@ -323,7 +323,7 @@ void Launcher::wifiToggleCallback(lv_event_t* e) {
     Logger::info("Launcher", "WiFi " + String(enabled ? "disabled" : "enabled"));
 }
 
-void Launcher::cellularToggleCallback(lv_event_t* e) {
+void UILauncher::cellularToggleCallback(lv_event_t* e) {
     using TDeckOS::Communication::CommunicationManager;
     CommunicationManager* comm = CommunicationManager::getInstance();
     bool enabled = comm->isInterfaceEnabled(TDeckOS::Communication::CommInterface::CELLULAR);
@@ -331,7 +331,7 @@ void Launcher::cellularToggleCallback(lv_event_t* e) {
     Logger::info("Launcher", "Cellular " + String(enabled ? "disabled" : "enabled"));
 }
 
-void Launcher::loraToggleCallback(lv_event_t* e) {
+void UILauncher::loraToggleCallback(lv_event_t* e) {
     using TDeckOS::Communication::CommunicationManager;
     CommunicationManager* comm = CommunicationManager::getInstance();
     bool enabled = comm->isInterfaceEnabled(TDeckOS::Communication::CommInterface::LORA);
@@ -339,13 +339,13 @@ void Launcher::loraToggleCallback(lv_event_t* e) {
     Logger::info("Launcher", "LoRa " + String(enabled ? "disabled" : "enabled"));
 }
 
-void Launcher::settingsCallback(lv_event_t* e) {
+void UILauncher::settingsCallback(lv_event_t* e) {
     Logger::info("Launcher", "Opening settings app");
     AppManager::getInstance().launchApp("Settings");
 }
 
-void Launcher::notificationClickCallback(lv_event_t* e) {
+void UILauncher::notificationClickCallback(lv_event_t* e) {
     Logger::info("Launcher", "Notification clicked");
-    Launcher* launcher = (Launcher*)lv_event_get_user_data(e);
+    UILauncher* launcher = (UILauncher*)lv_event_get_user_data(e);
     if(launcher) launcher->hideNotifications();
 }

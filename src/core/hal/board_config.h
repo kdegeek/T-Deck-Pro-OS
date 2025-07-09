@@ -68,7 +68,7 @@
 #define BOARD_SD_MISO       34
 
 // ===== TRACKBALL =====
-#define BOARD_TB_UP         0
+#define BOARD_TB_UP         22  // Changed from 0 to avoid boot pin conflict
 #define BOARD_TB_DOWN       19
 #define BOARD_TB_LEFT       20
 #define BOARD_TB_RIGHT      33

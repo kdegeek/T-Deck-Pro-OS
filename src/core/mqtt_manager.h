@@ -59,7 +59,7 @@ enum class MQTTStatus {
     CONNECTING,
     CONNECTED,
     ERROR,
-    DISABLED
+    MQTT_DISABLED
 };
 
 /**

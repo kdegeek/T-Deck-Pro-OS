@@ -18,7 +18,7 @@
  * @brief Tailscale connection status
  */
 enum class TailscaleStatus {
-    DISABLED,
+    TAILSCALE_DISABLED,
     INITIALIZING,
     AUTHENTICATING,
     CONNECTING,

@@ -13,6 +13,9 @@
 #include <vector>
 #include "../config/os_config.h"
 
+// Forward declaration
+class UILauncher;
+
 /**
  * @brief App icon information for launcher
  */
@@ -256,6 +259,9 @@ private:
     // App management
     std::vector<AppIcon> app_icons;
     SystemStatus current_status;
+    
+    // UI launcher reference
+    UILauncher* ui_launcher;
     
     // Layout configuration
     static const int ICON_SIZE = 64;

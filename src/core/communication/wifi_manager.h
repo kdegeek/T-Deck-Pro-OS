@@ -14,6 +14,7 @@
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
+#include <vector>
 #include "core/utils/logger.h"
 
 namespace TDeckOS {

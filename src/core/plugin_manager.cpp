@@ -39,7 +39,7 @@ bool PluginManager::initialize() {
     Serial.println("[Plugin] Initializing Plugin Manager");
     
     // Check SD card availability
-    if (SD.begin(SD_CS_PIN)) {
+    if (SD.begin(BOARD_SD_CS)) {
         sd_card_available = true;
         Serial.println("[Plugin] SD card detected");
         

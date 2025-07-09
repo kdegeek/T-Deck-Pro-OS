@@ -11,6 +11,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
+#include <vector>
 #include "../config/os_config.h"
 
 /**
@@ -21,7 +22,7 @@ enum class HardwareStatus {
     INITIALIZING,
     READY,
     ERROR,
-    DISABLED
+    HARDWARE_DISABLED
 };
 
 /**

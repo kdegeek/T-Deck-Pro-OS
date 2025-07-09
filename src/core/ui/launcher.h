@@ -46,16 +46,16 @@ struct Notification {
     uint32_t timestamp;
 };
 
-class Launcher {
+class UILauncher {
 public:
-    static Launcher* getInstance();
+    static UILauncher* getInstance();
     bool init();
     void update();
     void addNotification(const String& title, const String& message);
 
 private:
-    Launcher();
-    static Launcher* instance;
+    UILauncher();
+    static UILauncher* instance;
 
     bool initialized;
 

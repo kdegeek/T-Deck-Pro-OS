@@ -18,7 +18,7 @@ const String TailscaleManager::STATE_FILE = "/tailscale/state.json";
 const String TailscaleManager::LOG_FILE = "/tailscale/tailscale.log";
 
 TailscaleManager::TailscaleManager() :
-    status(TailscaleStatus::DISABLED),
+    status(TailscaleStatus::TAILSCALE_DISABLED),
     enabled(false),
     ssh_enabled(false),
     last_status_check(0),
@@ -62,7 +62,7 @@ bool TailscaleManager::initialize() {
 }
 
 void TailscaleManager::update() {
-    if (!enabled || status == TailscaleStatus::DISABLED) {
+    if (!enabled || status == TailscaleStatus::TAILSCALE_DISABLED) {
         return;
     }
     
@@ -121,7 +121,7 @@ bool TailscaleManager::connect(const String& auth_key, const String& hostname) {
 }
 
 void TailscaleManager::disconnect() {
-    if (status != TailscaleStatus::DISABLED) {
+    if (status != TailscaleStatus::TAILSCALE_DISABLED) {
         Serial.println("[Tailscale] Disconnecting");
         stop_daemon();
         cleanup_network_interface();
@@ -264,9 +264,9 @@ bool TailscaleManager::set_config_json(const String& config_json) {
 
 void TailscaleManager::set_enabled(bool enabled) {
     this->enabled = enabled;
-    if (!enabled && status != TailscaleStatus::DISABLED) {
+    if (!enabled && status != TailscaleStatus::TAILSCALE_DISABLED) {
         disconnect();
-        status = TailscaleStatus::DISABLED;
+        status = TailscaleStatus::TAILSCALE_DISABLED;
     }
     save_config();
 }

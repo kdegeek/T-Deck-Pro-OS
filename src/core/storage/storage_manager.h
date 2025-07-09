@@ -6,6 +6,7 @@
 #include <SPIFFS.h>
 #include <SD.h>
 #include <FS.h>
+#include <vector>
 #include "core/utils/logger.h"
 
 // Storage types

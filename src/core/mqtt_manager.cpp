@@ -160,7 +160,7 @@ void MQTTManager::disconnect() {
 }
 
 bool MQTTManager::is_connected() const {
-    return mqtt_client.connected();
+    return const_cast<PubSubClient&>(mqtt_client).connected();
 }
 
 MQTTStatus MQTTManager::get_status() const {
@@ -305,7 +305,7 @@ String MQTTManager::get_device_id() const {
 String MQTTManager::get_statistics() const {
     DynamicJsonDocument doc(512);
     doc["status"] = (int)status;
-    doc["connected"] = mqtt_client.connected();
+    doc["connected"] = const_cast<PubSubClient&>(mqtt_client).connected();
     doc["messages_sent"] = stats.messages_sent;
     doc["messages_received"] = stats.messages_received;
     doc["connection_attempts"] = stats.connection_attempts;

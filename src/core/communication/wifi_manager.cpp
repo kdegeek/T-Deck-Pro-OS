@@ -8,6 +8,7 @@
 #include "wifi_manager.h"
 #include "core/hal/board_config.h"
 #include <Arduino.h>
+#include <vector>
 
 namespace TDeckOS {
 namespace Communication {

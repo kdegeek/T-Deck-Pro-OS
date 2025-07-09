@@ -628,7 +628,7 @@ bool ServerIntegration::downloadUpdate(const OTAUpdate& update) {
     Logger::info("ServerIntegration", "Starting OTA update download from: " + update.downloadUrl);
     
     // Add notification to launcher
-    Launcher* launcher = Launcher::getInstance();
+    UILauncher* launcher = UILauncher::getInstance();
     launcher->addNotification("OTA Update", "Downloading firmware update...");
     
     // Implementation would use ESP32 OTA library
@@ -668,7 +668,7 @@ bool ServerIntegration::downloadApp(const AppCommand& command) {
     Logger::info("ServerIntegration", "Downloading app: " + command.appName + " from " + command.downloadUrl);
     
     // Add notification to launcher
-    Launcher* launcher = Launcher::getInstance();
+    UILauncher* launcher = UILauncher::getInstance();
     launcher->addNotification("App Install", "Downloading " + command.appName + "...");
     
     // Implementation would download app binary and install via StorageManager

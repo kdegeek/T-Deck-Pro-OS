@@ -6,6 +6,8 @@
  */
 
 #include "hardware_manager.h"
+#include "../config/os_config.h"
+#include "../core/display/eink_manager.h"
 #include <ArduinoJson.h>
 
 static const char* TAG = "HardwareManager";
@@ -194,16 +196,22 @@ bool HardwareManager::init_spi_bus() {
 bool HardwareManager::init_display() {
     set_component_status("E-ink Display", HardwareStatus::INITIALIZING);
     
-    // E-ink display initialization will be handled by display_driver.cpp
-    // For now, just mark as ready if SPI is working
-    if (spi_initialized) {
-        Serial.println("[HW] E-ink display ready for initialization");
-        set_component_status("E-ink Display", HardwareStatus::READY);
-        return true;
-    } else {
+    if (!spi_initialized) {
         set_component_status("E-ink Display", HardwareStatus::ERROR, "SPI not ready");
         return false;
     }
+    
+    // Initialize the E-ink manager
+    extern EinkManager eink_manager;
+    if (!eink_manager.initialize()) {
+        Serial.println("[HW] E-ink display initialization failed");
+        set_component_status("E-ink Display", HardwareStatus::ERROR, "E-ink manager init failed");
+        return false;
+    }
+    
+    Serial.println("[HW] E-ink display initialized successfully");
+    set_component_status("E-ink Display", HardwareStatus::READY);
+    return true;
 }
 
 bool HardwareManager::init_touch() {
@@ -297,9 +305,15 @@ bool HardwareManager::init_storage() {
 }
 
 bool HardwareManager::init_audio() {
+#if FEATURE_AUDIO_ENABLED
     set_component_status("Audio", HardwareStatus::INITIALIZING);
     // Audio initialization will be handled by audio driver
     set_component_status("Audio", HardwareStatus::READY);
+    Serial.println("[HW] Audio system initialized");
+#else
+    set_component_status("Audio", HardwareStatus::HARDWARE_DISABLED);
+    Serial.println("[HW] Audio system disabled (no audio chip)");
+#endif
     return true;
 }
 
@@ -386,7 +400,7 @@ bool HardwareManager::set_component_enabled(const String& component_name, bool e
     if (enable) {
         component->status = HardwareStatus::READY;
     } else {
-        component->status = HardwareStatus::DISABLED;
+        component->status = HardwareStatus::HARDWARE_DISABLED;
     }
     
     return true;
