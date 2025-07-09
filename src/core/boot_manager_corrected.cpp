@@ -6,14 +6,16 @@
  * @note Corrected boot manager with hardware driver integration and display feedback
  */
 
+#include <Arduino.h>
+#include <cstring>
 #include "boot_manager_corrected.h"
-#include "../drivers/hardware_manager_corrected.cpp"
-#include "../core/display/eink_manager_corrected.cpp"
 #include "../drivers/sensor_manager.h"
 #include "../drivers/lora_driver.h"
 #include "../drivers/gps_driver.h"
 #include "../drivers/modem_4g_driver.h"
 #include <ArduinoJson.h>
+#include "../drivers/hardware_manager.h"
+#include "../core/display/eink_manager_corrected.h"
 
 static const char* TAG = "BootManager";
 
@@ -226,14 +228,13 @@ bool BootManager::initializeDisplay() {
     }
     
     // Initialize display manager
-    if (!display_manager_->initialize()) {
+    if (!display_manager_->init()) {
         Serial.println("[BOOT] ERROR: Display manager initialization failed");
         return false;
     }
     
     // Test basic display functionality
-    display_manager_->showBootSplash();
-    display_manager_->setBrightness(50);
+    display_manager_->showBootSplash("T-Deck-Pro OS", "Initializing...");
     
     validation_flags_.display_system = true;
     display_available_ = true;
@@ -432,13 +433,13 @@ void BootManager::showError(BootError error_code, const String& error_message) {
     
     // Show error on display if available
     if (display_available_ && display_manager_) {
-        display_manager_->showError(error_message);
+        display_manager_->showError("Boot Error", error_message.c_str());
     }
 }
 
 void BootManager::showBootProgress(BootStage stage, const String& message, int progress) {
     if (display_available_ && display_manager_) {
-        display_manager_->showBootProgress(getStageName(stage), message, progress);
+        display_manager_->showBootSplash(getStageName(stage).c_str(), message.c_str());
     }
     
     if (progress >= 0) {
@@ -523,7 +524,7 @@ void BootManager::emergencyRestart(const String& reason) {
     
     // Show emergency restart on display
     if (display_available_ && display_manager_) {
-        display_manager_->showError("EMERGENCY RESTART: " + reason);
+        display_manager_->showError("EMERGENCY RESTART", reason.c_str());
         delay(3000); // Show message for 3 seconds
     }
     
@@ -535,7 +536,7 @@ void BootManager::showSplashScreen() {
     Serial.println("[BOOT] Showing splash screen...");
     
     if (display_available_ && display_manager_) {
-        display_manager_->showBootSplash();
+        display_manager_->showBootSplash("T-Deck-Pro OS", "Booting...");
     }
     
     Serial.println("[BOOT] T-Deck-Pro OS v1.0");
@@ -618,18 +619,18 @@ void BootManager::clearDisplay() {
 
 void BootManager::drawText(const String& text, int x, int y, int size) {
     if (display_manager_) {
-        display_manager_->showText(text, x, y);
+        display_manager_->drawText(x, y, text.c_str(), 1);
     }
 }
 
 void BootManager::drawProgressBar(int x, int y, int width, int height, int progress) {
     if (display_manager_) {
-        display_manager_->showBootProgress("", "", progress);
+        display_manager_->showBootSplash("Progress", std::to_string(progress).c_str());
     }
 }
 
 void BootManager::updateDisplay() {
     if (display_manager_) {
-        display_manager_->update();
+        display_manager_->refresh();
     }
 }

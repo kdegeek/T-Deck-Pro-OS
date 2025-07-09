@@ -10,7 +10,8 @@
 #define BOOT_MANAGER_CORRECTED_H
 
 #include <Arduino.h>
-#include "../config/os_config_corrected.h"
+#include "config/os_config_corrected.h"
+#include "../drivers/modem_4g_driver.h"
 
 // Forward declarations
 class HardwareManager;
@@ -18,7 +19,6 @@ class EinkManager;
 class SensorManager;
 class LoRaDriver;
 class GPSDriver;
-class ModemDriver;
 
 /**
  * @brief Boot stages for tracking startup progress
@@ -178,7 +178,7 @@ public:
      * @brief Set modem driver reference
      * @param modem_driver Modem driver instance
      */
-    void setModemDriver(ModemDriver* modem_driver) { modem_driver_ = modem_driver; }
+    void setModemDriver(Modem4GDriver* modem_driver) { modem_driver_ = modem_driver; }
 
 private:
     /**
@@ -288,7 +288,7 @@ private:
     SensorManager* sensor_manager_;
     LoRaDriver* lora_driver_;
     GPSDriver* gps_driver_;
-    ModemDriver* modem_driver_;
+    Modem4GDriver* modem_driver_;
     
     // Boot statistics
     struct BootStats {

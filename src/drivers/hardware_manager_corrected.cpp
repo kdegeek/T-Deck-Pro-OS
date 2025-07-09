@@ -7,10 +7,10 @@
  */
 
 #include "hardware_manager.h"
-#include "../config/os_config_corrected.h"
+#include <Arduino.h>
+#include "config/os_config_corrected.h"
 #include "../core/hal/board_config_corrected.h"
 
-#include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
 #include <esp_log.h>
@@ -18,6 +18,28 @@
 #include <driver/gpio.h>
 #include <driver/i2c.h>
 #include <driver/spi_master.h>
+
+#ifndef BOARD_GYRO_EN
+#define BOARD_GYRO_EN 45 // TODO: Replace with actual pin
+#endif
+#ifndef BOARD_MODEM_EN
+#define BOARD_MODEM_EN 46 // TODO: Replace with actual pin
+#endif
+#ifndef BOARD_KB_LED
+#define BOARD_KB_LED 47 // TODO: Replace with actual pin
+#endif
+#ifndef BOARD_LORA_DIO1
+#define BOARD_LORA_DIO1 48 // TODO: Replace with actual pin
+#endif
+#ifndef BOARD_KB_INT
+#define BOARD_KB_INT 49 // TODO: Replace with actual pin
+#endif
+#ifndef BOARD_GYRO_INT
+#define BOARD_GYRO_INT 50 // TODO: Replace with actual pin
+#endif
+#ifndef BOARD_I2C_FREQ
+#define BOARD_I2C_FREQ 400000 // 400kHz default
+#endif
 
 static const char* TAG = "HW_MANAGER";
 
@@ -285,13 +307,13 @@ bool HardwareManager::initializePowerManagement() {
     }
     
     // Initialize all peripheral states as OFF
-    peripheral_states_["display"] = BOARD_PERIPHERAL_OFF;
-    peripheral_states_["wifi"] = BOARD_PERIPHERAL_OFF;
-    peripheral_states_["modem"] = BOARD_PERIPHERAL_OFF;
-    peripheral_states_["lora"] = BOARD_PERIPHERAL_OFF;
-    peripheral_states_["gps"] = BOARD_PERIPHERAL_OFF;
-    peripheral_states_["gyro"] = BOARD_PERIPHERAL_OFF;
-    peripheral_states_["sd"] = BOARD_PERIPHERAL_OFF;
+    peripheral_states_["display"] = {false, false, false, 0, ""};
+    peripheral_states_["wifi"] = {false, false, false, 0, ""};
+    peripheral_states_["modem"] = {false, false, false, 0, ""};
+    peripheral_states_["lora"] = {false, false, false, 0, ""};
+    peripheral_states_["gps"] = {false, false, false, 0, ""};
+    peripheral_states_["gyro"] = {false, false, false, 0, ""};
+    peripheral_states_["sd"] = {false, false, false, 0, ""};
     
     // Read initial battery voltage
     updateBatteryVoltage();
@@ -330,10 +352,10 @@ bool HardwareManager::detectPeripherals() {
     for (auto& peripheral : peripherals) {
         if (isI2CDevicePresent(peripheral.address)) {
             ESP_LOGI(TAG, "✓ %s detected at 0x%02X", peripheral.name, peripheral.address);
-            peripheral_states_[peripheral.key] = BOARD_PERIPHERAL_STANDBY;
+            peripheral_states_[peripheral.key] = {true, false, false, millis(), ""};
         } else {
             ESP_LOGW(TAG, "✗ %s not found at 0x%02X", peripheral.name, peripheral.address);
-            peripheral_states_[peripheral.key] = BOARD_PERIPHERAL_ERROR;
+            peripheral_states_[peripheral.key] = {false, false, false, millis(), "Not detected"};
             all_detected = false;
         }
     }
@@ -360,35 +382,35 @@ bool HardwareManager::enablePeripheral(const char* peripheral) {
     
     if (strcmp(peripheral, "display") == 0) {
         // E-ink display is always enabled when SPI is available
-        peripheral_states_["display"] = BOARD_PERIPHERAL_ACTIVE;
+        peripheral_states_["display"] = {true, true, true, millis(), ""};
         return true;
     }
     
     if (strcmp(peripheral, "modem") == 0) {
         gpio_set_level((gpio_num_t)BOARD_MODEM_EN, 1);
         delay(100);
-        peripheral_states_["modem"] = BOARD_PERIPHERAL_ACTIVE;
+        peripheral_states_["modem"] = {true, true, true, millis(), ""};
         return true;
     }
     
     if (strcmp(peripheral, "lora") == 0) {
         gpio_set_level((gpio_num_t)BOARD_LORA_EN, 1);
         delay(100);
-        peripheral_states_["lora"] = BOARD_PERIPHERAL_ACTIVE;
+        peripheral_states_["lora"] = {true, true, true, millis(), ""};
         return true;
     }
     
     if (strcmp(peripheral, "gps") == 0) {
         gpio_set_level((gpio_num_t)BOARD_GPS_EN, 1);
         delay(100);
-        peripheral_states_["gps"] = BOARD_PERIPHERAL_ACTIVE;
+        peripheral_states_["gps"] = {true, true, true, millis(), ""};
         return true;
     }
     
     if (strcmp(peripheral, "gyro") == 0) {
         gpio_set_level((gpio_num_t)BOARD_GYRO_EN, 1);
         delay(100);
-        peripheral_states_["gyro"] = BOARD_PERIPHERAL_ACTIVE;
+        peripheral_states_["gyro"] = {true, true, true, millis(), ""};
         return true;
     }
     
@@ -401,25 +423,25 @@ bool HardwareManager::disablePeripheral(const char* peripheral) {
     
     if (strcmp(peripheral, "modem") == 0) {
         gpio_set_level((gpio_num_t)BOARD_MODEM_EN, 0);
-        peripheral_states_["modem"] = BOARD_PERIPHERAL_OFF;
+        peripheral_states_["modem"] = {false, false, false, millis(), ""};
         return true;
     }
     
     if (strcmp(peripheral, "lora") == 0) {
         gpio_set_level((gpio_num_t)BOARD_LORA_EN, 0);
-        peripheral_states_["lora"] = BOARD_PERIPHERAL_OFF;
+        peripheral_states_["lora"] = {false, false, false, millis(), ""};
         return true;
     }
     
     if (strcmp(peripheral, "gps") == 0) {
         gpio_set_level((gpio_num_t)BOARD_GPS_EN, 0);
-        peripheral_states_["gps"] = BOARD_PERIPHERAL_OFF;
+        peripheral_states_["gps"] = {false, false, false, millis(), ""};
         return true;
     }
     
     if (strcmp(peripheral, "gyro") == 0) {
         gpio_set_level((gpio_num_t)BOARD_GYRO_EN, 0);
-        peripheral_states_["gyro"] = BOARD_PERIPHERAL_OFF;
+        peripheral_states_["gyro"] = {false, false, false, millis(), ""};
         return true;
     }
     
@@ -431,7 +453,7 @@ bool HardwareManager::disablePeripheral(const char* peripheral) {
 
 bool HardwareManager::isDisplayAvailable() const {
     return spi_initialized_ && peripheral_states_.count("display") && 
-           peripheral_states_.at("display") != BOARD_PERIPHERAL_ERROR;
+           peripheral_states_.at("display").initialized;
 }
 
 bool HardwareManager::isWiFiAvailable() const {
@@ -440,17 +462,17 @@ bool HardwareManager::isWiFiAvailable() const {
 
 bool HardwareManager::isModemAvailable() const {
     return peripheral_states_.count("modem") && 
-           peripheral_states_.at("modem") != BOARD_PERIPHERAL_ERROR;
+           peripheral_states_.at("modem").initialized;
 }
 
 bool HardwareManager::isLoRaAvailable() const {
     return peripheral_states_.count("lora") && 
-           peripheral_states_.at("lora") != BOARD_PERIPHERAL_ERROR;
+           peripheral_states_.at("lora").initialized;
 }
 
 bool HardwareManager::isGPSAvailable() const {
     return peripheral_states_.count("gps") && 
-           peripheral_states_.at("gps") != BOARD_PERIPHERAL_ERROR;
+           peripheral_states_.at("gps").initialized;
 }
 
 bool HardwareManager::isSDCardAvailable() const {

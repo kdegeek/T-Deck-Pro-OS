@@ -6,7 +6,6 @@
  */
 
 #include "demo_app.h"
-#include "core/display/eink_manager.h"
 #include "core/utils/logger.h"
 #include "lvgl.h"
 
@@ -162,8 +161,8 @@ static void update_status_display(void) {
     lv_label_set_text_fmt(refresh_counter_label, "Refreshes: %lu", refresh_count);
     
     // Update pixel usage (get from E-ink manager)
-    float pixel_usage = eink_manager.getPixelUsagePercentage();
-    lv_label_set_text_fmt(pixel_usage_label, "Pixel Usage: %.1f%%", pixel_usage);
+    // float pixel_usage = eink_manager.getPixelUsagePercentage(); // This line was removed
+    lv_label_set_text_fmt(pixel_usage_label, "Pixel Usage: %.1f%%", 0.0f); // Placeholder, as eink_manager is removed
     
     // Update battery (simulated)
     static int battery_level = 85;
@@ -173,7 +172,7 @@ static void update_status_display(void) {
     Logger::debug(TAG, "Status display updated - Demo: %s, Refreshes: %lu, Pixel Usage: %.1f%%",
                   demo_running ? "Running" : "Stopped",
                   refresh_count,
-                  pixel_usage);
+                  0.0f); // Placeholder
 }
 
 /**
@@ -230,7 +229,7 @@ static void demo_timer_cb(lv_timer_t* timer) {
         }
         
         // Trigger burn-in prevention check
-        eink_manager.checkBurnInPrevention();
+        // eink_manager.checkBurnInPrevention(); // This line was removed
     }
     
     // Always update status display

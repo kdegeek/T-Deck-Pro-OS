@@ -7,7 +7,7 @@
  */
 
 #include "sensor_manager.h"
-#include "../config/os_config_corrected.h"
+#include "config/os_config_corrected.h"
 #include <Arduino.h>
 
 // I2C Device Addresses (from os_config_corrected.h)

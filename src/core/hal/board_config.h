@@ -150,12 +150,12 @@ typedef enum {
 } board_power_state_t;
 
 // ===== PERIPHERAL STATES =====
-typedef enum {
-    BOARD_PERIPHERAL_OFF,
-    BOARD_PERIPHERAL_STANDBY,
-    BOARD_PERIPHERAL_ACTIVE,
-    BOARD_PERIPHERAL_ERROR
-} board_peripheral_state_t;
+// typedef enum {
+//     BOARD_PERIPHERAL_OFF,
+//     BOARD_PERIPHERAL_STANDBY,
+//     BOARD_PERIPHERAL_ACTIVE,
+//     BOARD_PERIPHERAL_ERROR
+// } board_peripheral_state_t;
 
 // ===== BOARD INITIALIZATION =====
 #ifdef __cplusplus

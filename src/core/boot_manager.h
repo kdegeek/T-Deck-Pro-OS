@@ -9,7 +9,7 @@
 #define BOOT_MANAGER_H
 
 #include <Arduino.h>
-#include "../config/os_config.h"
+#include "config/os_config_corrected.h"
 
 /**
  * @brief Boot stages for tracking startup progress

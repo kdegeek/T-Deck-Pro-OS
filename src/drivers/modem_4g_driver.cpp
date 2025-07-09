@@ -7,12 +7,16 @@
  */
 
 #include "modem_4g_driver.h"
-#include "../config/os_config_corrected.h"
+#include <Arduino.h>
+#include "config/os_config_corrected.h"
 #include "../core/hal/board_config_corrected.h"
 
-#include <Arduino.h>
 #include <esp_log.h>
 #include <HardwareSerial.h>
+
+#ifndef BOARD_A7682E_EN
+#define BOARD_A7682E_EN 44 // TODO: Replace with actual pin
+#endif
 
 static const char* TAG = "4G_MODEM";
 
@@ -96,30 +100,30 @@ bool Modem4GDriver::initializeHardware() {
     ESP_LOGI(TAG, "Initializing 4G modem hardware pins...");
     
     // Configure power and control pins
-    pinMode(BOARD_MODEM_PWRKEY, OUTPUT);
-    pinMode(BOARD_MODEM_RST, OUTPUT);
-    pinMode(BOARD_MODEM_EN, OUTPUT);
+    pinMode(BOARD_A7682E_PWRKEY, OUTPUT);
+    pinMode(BOARD_A7682E_RST, OUTPUT);
+    pinMode(BOARD_A7682E_EN, OUTPUT);
     
     // Set initial states
-    digitalWrite(BOARD_MODEM_EN, LOW);      // Disable power initially
-    digitalWrite(BOARD_MODEM_RST, HIGH);    // Not in reset
-    digitalWrite(BOARD_MODEM_PWRKEY, HIGH); // Power key inactive
+    digitalWrite(BOARD_A7682E_EN, LOW);      // Disable power initially
+    digitalWrite(BOARD_A7682E_RST, HIGH);    // Not in reset
+    digitalWrite(BOARD_A7682E_PWRKEY, HIGH); // Power key inactive
     
     // Configure status pins if available
-    if (BOARD_MODEM_RI >= 0) {
-        pinMode(BOARD_MODEM_RI, INPUT_PULLUP);
+    if (BOARD_A7682E_RI >= 0) {
+        pinMode(BOARD_A7682E_RI, INPUT_PULLUP);
     }
-    if (BOARD_MODEM_ITR >= 0) {
-        pinMode(BOARD_MODEM_ITR, OUTPUT);
-        digitalWrite(BOARD_MODEM_ITR, HIGH);
+    if (BOARD_A7682E_ITR >= 0) {
+        pinMode(BOARD_A7682E_ITR, OUTPUT);
+        digitalWrite(BOARD_A7682E_ITR, HIGH);
     }
     
     ESP_LOGI(TAG, "Hardware pins configured:");
-    ESP_LOGI(TAG, "  - PWRKEY: GPIO%d", BOARD_MODEM_PWRKEY);
-    ESP_LOGI(TAG, "  - RST:    GPIO%d", BOARD_MODEM_RST);
-    ESP_LOGI(TAG, "  - EN:     GPIO%d", BOARD_MODEM_EN);
-    ESP_LOGI(TAG, "  - RXD:    GPIO%d", BOARD_MODEM_RXD);
-    ESP_LOGI(TAG, "  - TXD:    GPIO%d", BOARD_MODEM_TXD);
+    ESP_LOGI(TAG, "  - PWRKEY: GPIO%d", BOARD_A7682E_PWRKEY);
+    ESP_LOGI(TAG, "  - RST:    GPIO%d", BOARD_A7682E_RST);
+    ESP_LOGI(TAG, "  - EN:     GPIO%d", BOARD_A7682E_EN);
+    ESP_LOGI(TAG, "  - RXD:    GPIO%d", BOARD_A7682E_RXD);
+    ESP_LOGI(TAG, "  - TXD:    GPIO%d", BOARD_A7682E_TXD);
     
     return true;
 }
@@ -128,7 +132,7 @@ bool Modem4GDriver::initializeSerial() {
     ESP_LOGI(TAG, "Initializing serial communication...");
     
     // Initialize UART for A7682E communication
-    serial_->begin(115200, SERIAL_8N1, BOARD_MODEM_RXD, BOARD_MODEM_TXD);
+    serial_->begin(115200, SERIAL_8N1, BOARD_A7682E_RXD, BOARD_A7682E_TXD);
     
     // Clear any pending data
     while (serial_->available()) {
@@ -148,17 +152,17 @@ bool Modem4GDriver::powerOn() {
     }
     
     // Enable power supply
-    digitalWrite(BOARD_MODEM_EN, HIGH);
+    digitalWrite(BOARD_A7682E_EN, HIGH);
     delay(100);
     
     // Power on sequence for A7682E
-    digitalWrite(BOARD_MODEM_PWRKEY, LOW);   // Press power key
+    digitalWrite(BOARD_A7682E_PWRKEY, LOW);   // Press power key
     delay(1000);                             // Hold for 1 second
-    digitalWrite(BOARD_MODEM_PWRKEY, HIGH);  // Release power key
+    digitalWrite(BOARD_A7682E_PWRKEY, HIGH);  // Release power key
     
     // Wait for modem to boot
     ESP_LOGI(TAG, "Waiting for modem to boot...");
-    delay(BOARD_MODEM_INIT_MS);
+    delay(OS_BOOT_TIMEOUT_MS);
     
     power_state_ = MODEM_POWER_ON;
     ESP_LOGI(TAG, "Modem powered on successfully");
@@ -178,12 +182,12 @@ bool Modem4GDriver::powerOff() {
     delay(5000);
     
     // Force power off if needed
-    digitalWrite(BOARD_MODEM_PWRKEY, LOW);
+    digitalWrite(BOARD_A7682E_PWRKEY, LOW);
     delay(2500);
-    digitalWrite(BOARD_MODEM_PWRKEY, HIGH);
+    digitalWrite(BOARD_A7682E_PWRKEY, HIGH);
     
     // Disable power supply
-    digitalWrite(BOARD_MODEM_EN, LOW);
+    digitalWrite(BOARD_A7682E_EN, LOW);
     
     power_state_ = MODEM_POWER_OFF;
     network_state_ = NETWORK_NOT_REGISTERED;

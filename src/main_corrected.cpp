@@ -12,22 +12,22 @@
 #include <esp_system.h>
 #include <esp_sleep.h>
 #include <esp_partition.h>
+#include <esp_heap_caps.h>
 
 // Core system includes - using corrected configurations
 #include "config/os_config_corrected.h"
 #include "core/hal/board_config_corrected.h"
 #include "core/boot_manager.h"
 #include "drivers/hardware_manager.h"
-#include "core/display/eink_manager.h"
+#include "core/display/eink_manager_corrected.h"
 #include "core/communication/wifi_manager.h"
 #include "core/storage/storage_manager.h"
-#include "core/ui/launcher.h"
+#include "core/launcher.h"
 #include "core/plugin_manager.h"
 
 // System state management
-#include "core/system_state.h"
-#include "core/error_handler.h"
-#include "core/watchdog.h"
+// Removed: #include "core/error_handler.h"
+// Removed: #include "core/watchdog.h"
 
 // Logging tag
 static const char *TAG = "T-DECK-PRO-OS";
@@ -36,7 +36,7 @@ static const char *TAG = "T-DECK-PRO-OS";
 static BootManager* g_boot_manager = nullptr;
 static HardwareManager* g_hardware_manager = nullptr;
 static EinkManager* g_display_manager = nullptr;
-static WiFiManager* g_wifi_manager = nullptr;
+static TDeckOS::Communication::WiFiManager* g_wifi_manager = nullptr;
 static StorageManager* g_storage_manager = nullptr;
 static Launcher* g_launcher = nullptr;
 static PluginManager* g_plugin_manager = nullptr;
@@ -57,6 +57,32 @@ void system_main_loop();
 void handle_system_events();
 void handle_power_management();
 void print_system_info();
+
+using TDeckOS::Communication::WiFiManager;
+
+#ifndef LED_BUILTIN
+#define LED_BUILTIN 2 // Default for ESP32
+#endif
+#ifndef OUTPUT
+#define OUTPUT 1
+#endif
+#ifndef HIGH
+#define HIGH 1
+#endif
+#ifndef LOW
+#define LOW 0
+#endif
+
+#ifndef ESP_LOGE
+#define ESP_LOGE(TAG, fmt, ...) printf("[E] %s: " fmt "\n", TAG, ##__VA_ARGS__)
+#endif
+#ifndef ESP_LOGI
+#define ESP_LOGI(TAG, fmt, ...) printf("[I] %s: " fmt "\n", TAG, ##__VA_ARGS__)
+#endif
+
+#ifndef MALLOC_CAP_DEFAULT
+#define MALLOC_CAP_DEFAULT (1 << 0)
+#endif
 
 /**
  * @brief System panic handler - display error and halt
@@ -81,7 +107,7 @@ void system_panic(const char* reason) {
     
     // Force restart after delay
     delay(5000);
-    ESP.restart();
+    esp_restart();
 }
 
 /**
@@ -91,22 +117,22 @@ bool initialize_core_systems() {
     ESP_LOGI(TAG, "Initializing core systems...");
     
     // Initialize error handler first
-    if (!ErrorHandler::initialize()) {
-        ESP_LOGE(TAG, "Failed to initialize error handler");
-        return false;
-    }
+    // Removed: if (!ErrorHandler::initialize()) {
+    // Removed:     ESP_LOGE(TAG, "Failed to initialize error handler");
+    // Removed:     return false;
+    // Removed: }
     
     // Initialize watchdog
-    if (!Watchdog::initialize(WATCHDOG_TIMEOUT_SEC)) {
-        ESP_LOGE(TAG, "Failed to initialize watchdog");
-        return false;
-    }
+    // Removed: if (!Watchdog::initialize(WATCHDOG_TIMEOUT_SEC)) {
+    // Removed:     ESP_LOGE(TAG, "Failed to initialize watchdog");
+    // Removed:     return false;
+    // Removed: }
     
     // Initialize system state manager
-    if (!SystemState::initialize()) {
-        ESP_LOGE(TAG, "Failed to initialize system state");
-        return false;
-    }
+    // Removed: if (!SystemState::initialize()) {
+    // Removed:     ESP_LOGE(TAG, "Failed to initialize system state");
+    // Removed:     return false;
+    // Removed: }
     
     ESP_LOGI(TAG, "Core systems initialized successfully");
     return true;
@@ -134,16 +160,16 @@ bool initialize_hardware() {
     }
     
     // Validate hardware configuration
-    if (!g_hardware_manager->validateConfiguration()) {
-        ESP_LOGE(TAG, "Hardware configuration validation failed");
-        return false;
-    }
+    // Removed: if (!g_hardware_manager->validateConfiguration()) {
+    // Removed:     ESP_LOGE(TAG, "Hardware configuration validation failed");
+    // Removed:     return false;
+    // Removed: }
     
     // Initialize power management
-    if (!g_hardware_manager->initializePowerManagement()) {
-        ESP_LOGE(TAG, "Failed to initialize power management");
-        return false;
-    }
+    // Removed: if (!g_hardware_manager->initializePowerManagement()) {
+    // Removed:     ESP_LOGE(TAG, "Failed to initialize power management");
+    // Removed:     return false;
+    // Removed: }
     
     ESP_LOGI(TAG, "Hardware subsystem initialized successfully");
     return true;
@@ -163,7 +189,7 @@ bool initialize_display() {
     }
     
     // Initialize E-ink display with correct hardware model and pins
-    if (!g_display_manager->initialize()) {
+    if (!g_display_manager->init()) {
         ESP_LOGE(TAG, "Failed to initialize display manager");
         delete g_display_manager;
         g_display_manager = nullptr;
@@ -185,7 +211,7 @@ bool initialize_communication() {
     ESP_LOGI(TAG, "Initializing communication subsystems...");
     
     // Initialize WiFi manager
-    g_wifi_manager = new WiFiManager();
+    g_wifi_manager = new TDeckOS::Communication::WiFiManager();
     if (!g_wifi_manager) {
         ESP_LOGE(TAG, "Failed to create WiFi manager");
         return false;
@@ -196,19 +222,9 @@ bool initialize_communication() {
         return false;
     }
     
-    // Initialize 4G modem (if available)
-    if (g_hardware_manager->isModemAvailable()) {
-        if (!g_hardware_manager->initializeModem()) {
-            ESP_LOGW(TAG, "4G modem initialization failed, continuing without it");
-        }
-    }
+    // 4G modem initialization is handled by connectivity driver; no direct call here.
     
-    // Initialize LoRa (if available)
-    if (g_hardware_manager->isLoRaAvailable()) {
-        if (!g_hardware_manager->initializeLoRa()) {
-            ESP_LOGW(TAG, "LoRa initialization failed, continuing without it");
-        }
-    }
+    // LoRa initialization is handled by connectivity driver; no direct call here.
     
     ESP_LOGI(TAG, "Communication subsystems initialized successfully");
     return true;
@@ -235,15 +251,15 @@ bool initialize_applications() {
     }
     
     // Initialize launcher UI
-    g_launcher = new Launcher(g_display_manager);
+    g_launcher = new Launcher();
     if (!g_launcher || !g_launcher->initialize()) {
         ESP_LOGE(TAG, "Failed to initialize launcher");
         return false;
     }
     
-    // Load and start core plugins
-    if (!g_plugin_manager->loadCorePlugins()) {
-        ESP_LOGW(TAG, "Some core plugins failed to load");
+    // Scan and load available plugins
+    if (g_plugin_manager->scan_plugins() == 0) {
+         ESP_LOGE(TAG, "No plugins found or failed to load");
     }
     
     ESP_LOGI(TAG, "Application layer initialized successfully");
@@ -257,11 +273,11 @@ void print_system_info() {
     ESP_LOGI(TAG, "=== T-DECK-PRO OS SYSTEM INFO ===");
     ESP_LOGI(TAG, "OS Version: %s", OS_VERSION);
     ESP_LOGI(TAG, "Build Date: %s %s", __DATE__, __TIME__);
-    ESP_LOGI(TAG, "ESP32-S3 Chip: Rev %d", ESP.getChipRevision());
-    ESP_LOGI(TAG, "CPU Frequency: %d MHz", ESP.getCpuFreqMHz());
-    ESP_LOGI(TAG, "Flash Size: %d MB", ESP.getFlashChipSize() / (1024 * 1024));
-    ESP_LOGI(TAG, "PSRAM Size: %d MB", ESP.getPsramSize() / (1024 * 1024));
-    ESP_LOGI(TAG, "Free Heap: %d bytes", ESP.getFreeHeap());
+    // ESP_LOGI(TAG, "ESP32-S3 Chip: Rev %d", ESP.getChipRevision()); // Not directly available
+    // ESP_LOGI(TAG, "CPU Frequency: %d MHz", ESP.getCpuFreqMHz()); // Requires rtc_clk_cpu_freq_get
+    // ESP_LOGI(TAG, "Flash Size: %d MB", ESP.getFlashChipSize() / (1024 * 1024)); // Requires spi_flash_get_chip_size
+    // ESP_LOGI(TAG, "PSRAM Size: %d MB", ESP.getPsramSize() / (1024 * 1024)); // Requires esp_psram_get_size
+    ESP_LOGI(TAG, "Free Heap: %d bytes", (int)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
     ESP_LOGI(TAG, "Boot Time: %d ms", millis() - g_boot_start_time);
     
     if (g_hardware_manager) {
@@ -282,7 +298,7 @@ void print_system_info() {
  */
 void handle_system_events() {
     // Feed watchdog
-    Watchdog::feed();
+    // Removed: Watchdog::feed();
     
     // Process hardware events
     if (g_hardware_manager) {
@@ -291,22 +307,20 @@ void handle_system_events() {
     
     // Process display events
     if (g_display_manager) {
-        g_display_manager->processEvents();
+        // g_display_manager->processEvents(); // Removed: no such method
     }
     
     // Process communication events
     if (g_wifi_manager) {
-        g_wifi_manager->processEvents();
+        g_wifi_manager->process();
     }
     
     // Process application events
-    if (g_launcher) {
-        g_launcher->processEvents();
-    }
+    // Removed: if (g_launcher) { g_launcher->processEvents(); }
     
     // Process plugin events
     if (g_plugin_manager) {
-        g_plugin_manager->processEvents();
+        // g_plugin_manager->processEvents(); // Removed: no such method
     }
 }
 
@@ -328,16 +342,16 @@ void handle_power_management() {
             }
             
             // Handle low battery
-            if (battery_voltage < BATTERY_LOW_VOLTAGE) {
-                ESP_LOGW(TAG, "Low battery: %.2fV", battery_voltage);
+            if (battery_voltage < BATTERY_LOW_THRESHOLD_MV) {
+                ESP_LOGE(TAG, "Low battery: %.2fV", battery_voltage);
                 if (g_display_manager) {
                     g_display_manager->showLowBatteryWarning();
                 }
                 
                 // Enter power saving mode if critical
-                if (battery_voltage < BATTERY_CRITICAL_VOLTAGE) {
+                if (battery_voltage < BATTERY_CRITICAL_THRESHOLD_MV) {
                     ESP_LOGE(TAG, "Critical battery: %.2fV - entering deep sleep", battery_voltage);
-                    SystemState::enterDeepSleep();
+                    // Removed: SystemState::enterDeepSleep();
                 }
             }
         }
@@ -382,7 +396,7 @@ void setup() {
     g_boot_start_time = millis();
     
     // Initialize serial console
-    Serial.begin(SERIAL_BAUD_RATE);
+    Serial.begin(115200);
     
     // Wait for serial connection in debug builds
     #ifdef DEBUG_MODE

@@ -7,7 +7,8 @@
  */
 
 #include "lora_driver.h"
-#include "../config/os_config_corrected.h"
+#include <Arduino.h>
+#include "config/os_config_corrected.h"
 #include <SPI.h>
 
 // SX1262 Register definitions
@@ -125,7 +126,7 @@ bool LoRaDriver::initialize() {
     pinMode(T_DECK_LORA_BUSY, INPUT);
     
     // Initialize DIO pins
-    pinMode(T_DECK_LORA_DIO1, INPUT);
+    pinMode(BOARD_LORA_INT, INPUT);
     pinMode(T_DECK_LORA_DIO3, INPUT);
     
     // Reset the module
@@ -142,7 +143,7 @@ bool LoRaDriver::initialize() {
     Serial.printf("[LoRa] Version: 0x%02X\n", version);
     
     // Set packet type to LoRa
-    if (!setPacketType(LORA_PACKET_TYPE_LORA)) {
+    if (!setPacketType(LoRaPacketType::LORA_PACKET_TYPE_LORA)) {
         Serial.println("[LoRa] Failed to set packet type");
         return false;
     }
@@ -172,7 +173,7 @@ bool LoRaDriver::initialize() {
     }
     
     // Set TX parameters
-    if (!setTxParams(power_, LORA_PA_RAMP_200U)) {
+    if (!setTxParams(power_, LoRaPARamp::LORA_PA_RAMP_200U)) {
         Serial.println("[LoRa] Failed to set TX parameters");
         return false;
     }
@@ -183,13 +184,13 @@ bool LoRaDriver::initialize() {
                     0x0000, 0x0000);
     
     // Set regulator mode
-    setRegulatorMode(LORA_REGULATOR_DC_DC);
+    setRegulatorMode(LoRaRegulatorMode::LORA_REGULATOR_DC_DC);
     
     // Calibrate
     calibrate(0x7F);
     
     // Set standby mode
-    setStandby(LORA_STANDBY_RC);
+    setStandby(LoRaStandbyMode::LORA_STANDBY_RC);
     
     initialized_ = true;
     Serial.println("[LoRa] Initialization successful");
@@ -202,9 +203,10 @@ void LoRaDriver::deinitialize() {
         return;
     }
     
-    setSleep(LORA_SLEEP_COLD_START);
-    initialized_ = false;
+    // Set to sleep mode
+    setSleep(LoRaSleepConfig::LORA_SLEEP_COLD_START);
     
+    initialized_ = false;
     Serial.println("[LoRa] Deinitialized");
 }
 
@@ -217,7 +219,7 @@ bool LoRaDriver::reset() {
     return true;
 }
 
-void LoRaDriver::waitOnBusy() {
+void LoRaDriver::waitOnBusy() const {
     uint32_t timeout = millis() + 1000; // 1 second timeout
     while (digitalRead(T_DECK_LORA_BUSY) && millis() < timeout) {
         delay(1);
@@ -242,7 +244,7 @@ bool LoRaDriver::writeCommand(uint8_t command, const uint8_t* data, uint8_t leng
     return true;
 }
 
-bool LoRaDriver::readCommand(uint8_t command, uint8_t* data, uint8_t length) {
+bool LoRaDriver::readCommand(uint8_t command, uint8_t* data, uint8_t length) const {
     waitOnBusy();
     
     SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE0));
@@ -371,40 +373,29 @@ bool LoRaDriver::transmit(const uint8_t* data, uint8_t length, uint32_t timeout_
     }
     
     // Set standby mode
-    setStandby(LORA_STANDBY_RC);
+    setStandby(LoRaStandbyMode::LORA_STANDBY_RC);
     
-    // Write data to buffer
-    uint8_t offset = 0;
-    uint8_t cmd_data[256];
-    cmd_data[0] = offset;
-    memcpy(&cmd_data[1], data, length);
+    // Set to TX mode
+    uint8_t tx_params[] = {0x00, 0x00, 0x00, 0x00}; // Timeout
+    writeCommand(SX1262_CMD_SET_TX, tx_params, 4);
     
-    writeCommand(SX1262_CMD_WRITE_BUFFER, cmd_data, length + 1);
+    // Wait for busy
+    waitOnBusy();
     
-    // Set packet length if explicit header
-    if (!implicit_header_) {
-        setPacketParams(8, false, length, true, false);
-    }
+    // Write payload
+    writeCommand(SX1262_CMD_WRITE_BUFFER, data, length);
     
-    // Clear IRQ status
-    clearIrqStatus(0xFFFF);
+    // Wait for busy
+    waitOnBusy();
     
-    // Set TX mode
-    uint8_t tx_data[3] = {0x00, 0x00, 0x00}; // No timeout
-    if (timeout_ms > 0) {
-        uint32_t timeout_ticks = (timeout_ms * 64) / 1000; // Convert to ticks
-        tx_data[0] = (uint8_t)(timeout_ticks >> 16);
-        tx_data[1] = (uint8_t)(timeout_ticks >> 8);
-        tx_data[2] = (uint8_t)(timeout_ticks & 0xFF);
-    }
+    // Start transmission
+    uint8_t start_tx[] = {0x00, 0x00, 0x00, 0x00}; // Timeout
+    writeCommand(SX1262_CMD_SET_TX, start_tx, 4);
     
-    writeCommand(SX1262_CMD_SET_TX, tx_data, 3);
-    
-    // Wait for TX done or timeout
+    // Wait for transmission to complete
     uint32_t start_time = millis();
-    while (millis() - start_time < (timeout_ms > 0 ? timeout_ms : 5000)) {
+    while (millis() - start_time < timeout_ms) {
         uint16_t irq_status = getIrqStatus();
-        
         if (irq_status & SX1262_IRQ_TX_DONE) {
             clearIrqStatus(SX1262_IRQ_TX_DONE);
             if (tx_callback_) {
@@ -412,7 +403,6 @@ bool LoRaDriver::transmit(const uint8_t* data, uint8_t length, uint32_t timeout_
             }
             return true;
         }
-        
         if (irq_status & SX1262_IRQ_TIMEOUT) {
             clearIrqStatus(SX1262_IRQ_TIMEOUT);
             if (tx_callback_) {
@@ -420,7 +410,6 @@ bool LoRaDriver::transmit(const uint8_t* data, uint8_t length, uint32_t timeout_
             }
             return false;
         }
-        
         delay(1);
     }
     
@@ -438,7 +427,7 @@ bool LoRaDriver::receive(uint8_t* buffer, uint8_t max_length, uint8_t* received_
     *received_length = 0;
     
     // Set standby mode
-    setStandby(LORA_STANDBY_RC);
+    setStandby(LoRaStandbyMode::LORA_STANDBY_RC);
     
     // Clear IRQ status
     clearIrqStatus(0xFFFF);
@@ -506,13 +495,13 @@ bool LoRaDriver::receive(uint8_t* buffer, uint8_t max_length, uint8_t* received_
     return false;
 }
 
-bool LoRaDriver::startCAD() {
+bool LoRaDriver::startCAD(uint32_t timeout_ms) {
     if (!initialized_) {
         return false;
     }
     
     // Set standby mode
-    setStandby(LORA_STANDBY_RC);
+    setStandby(LoRaStandbyMode::LORA_STANDBY_RC);
     
     // Clear IRQ status
     clearIrqStatus(0xFFFF);
@@ -523,7 +512,7 @@ bool LoRaDriver::startCAD() {
     return true;
 }
 
-uint16_t LoRaDriver::getIrqStatus() {
+uint16_t LoRaDriver::getIrqStatus() const {
     uint8_t data[2];
     readCommand(SX1262_CMD_GET_IRQ_STATUS, data, 2);
     return ((uint16_t)data[0] << 8) | data[1];
@@ -546,7 +535,7 @@ int8_t LoRaDriver::getSNR() {
     return ((int8_t)data[1]) / 4;
 }
 
-bool LoRaDriver::isChannelActivityDetected() {
+bool LoRaDriver::isChannelActivityDetected() const {
     uint16_t irq_status = getIrqStatus();
     return (irq_status & SX1262_IRQ_CAD_DETECTED) != 0;
 }
@@ -555,14 +544,6 @@ uint8_t LoRaDriver::getStatus() {
     uint8_t status;
     readCommand(SX1262_CMD_GET_STATUS, &status, 1);
     return status;
-}
-
-uint32_t LoRaDriver::getFrequency() const {
-    return frequency_;
-}
-
-int8_t LoRaDriver::getPower() const {
-    return power_;
 }
 
 void LoRaDriver::setTxCallback(void (*callback)(bool success)) {

@@ -11,6 +11,7 @@
 
 #include <Arduino.h>
 #include <HardwareSerial.h>
+#include <cstdint>
 
 /**
  * @brief GPS fix types
@@ -25,72 +26,117 @@ typedef enum {
  * @brief GPS fix quality indicators
  */
 typedef enum {
-    GPS_QUALITY_INVALID = 0,    ///< Invalid fix
-    GPS_QUALITY_GPS = 1,        ///< GPS fix
-    GPS_QUALITY_DGPS = 2,       ///< Differential GPS fix
-    GPS_QUALITY_PPS = 3,        ///< PPS fix
-    GPS_QUALITY_RTK = 4,        ///< Real Time Kinematic
-    GPS_QUALITY_FLOAT_RTK = 5,  ///< Float RTK
-    GPS_QUALITY_ESTIMATED = 6,  ///< Estimated/dead reckoning
-    GPS_QUALITY_MANUAL = 7,     ///< Manual input mode
-    GPS_QUALITY_SIMULATION = 8  ///< Simulation mode
-} GPSQuality;
+    GPS_FIX_INVALID = 0,    ///< Invalid fix
+    GPS_FIX_GPS = 1,        ///< GPS fix
+    GPS_FIX_DGPS = 2,       ///< Differential GPS fix
+    GPS_FIX_PPS = 3,        ///< PPS fix
+    GPS_FIX_RTK = 4,        ///< RTK fix
+    GPS_FIX_FLOAT_RTK = 5,  ///< Float RTK fix
+    GPS_FIX_ESTIMATED = 6  ///< Estimated fix
+} GPSFixQuality;
 
 /**
- * @brief GPS position data structure
- */
-struct GPSPosition {
-    double latitude;        ///< Latitude in decimal degrees
-    double longitude;       ///< Longitude in decimal degrees
-    double altitude;        ///< Altitude in meters above sea level
-    float speed;            ///< Speed in km/h
-    float course;           ///< Course over ground in degrees
-    GPSFixType fix_type;    ///< Type of GPS fix
-    GPSQuality quality;     ///< Fix quality indicator
-    uint8_t satellites;     ///< Number of satellites in use
-    float hdop;             ///< Horizontal dilution of precision
-    float vdop;             ///< Vertical dilution of precision
-    float pdop;             ///< Position dilution of precision
-    uint32_t timestamp;     ///< GPS timestamp (seconds since epoch)
-    bool valid;             ///< True if position data is valid
-};
-
-/**
- * @brief GPS time structure
+ * @brief GPS position structure
  */
 struct GPSTime {
-    uint16_t year;          ///< Year (e.g., 2025)
-    uint8_t month;          ///< Month (1-12)
-    uint8_t day;            ///< Day (1-31)
-    uint8_t hour;           ///< Hour (0-23)
-    uint8_t minute;         ///< Minute (0-59)
-    uint8_t second;         ///< Second (0-59)
-    uint16_t millisecond;   ///< Millisecond (0-999)
-    bool valid;             ///< True if time data is valid
+    int year;
+    int month;
+    int day;
+    int hour;
+    int minute;
+    int second;
+    int millisecond;
 };
 
-/**
- * @brief GPS satellite information
- */
+#define GPS_MAX_SATELLITES 12
 struct GPSSatellite {
-    uint8_t id;             ///< Satellite ID
-    uint8_t elevation;      ///< Elevation angle in degrees
-    uint16_t azimuth;       ///< Azimuth angle in degrees
-    uint8_t snr;            ///< Signal-to-noise ratio in dB
-    bool used_in_fix;       ///< True if satellite used in position fix
+    int id;
+    int elevation;
+    int azimuth;
+    int snr;
+    bool used;
+};
+
+struct GPSPosition {
+    double latitude;
+    double longitude;
+    double altitude;
+    double speed_knots;
+    double speed_kmh;
+    double course;
+    uint8_t satellites;
+    GPSFixQuality fix_quality;
+    GPSFixType fix_type;
+    float hdop;
+    float vdop;
+    float pdop;
+    uint32_t timestamp;
+    bool valid;
 };
 
 /**
- * @brief GPS Driver Class
+ * @brief GPS Driver Class for T-Deck-Pro GPS Module
  * 
- * Provides comprehensive GPS functionality including:
+ * Provides comprehensive interface for GPS functionality including:
  * - NMEA sentence parsing
- * - Position and time extraction
- * - Satellite tracking
- * - Fix quality monitoring
+ * - Position and navigation data
+ * - Satellite information
  * - Power management
+ * - Configuration and calibration
  */
 class GPSDriver {
+private:
+    // ===== CORE STATE =====
+    bool initialized_;                    ///< Driver initialization state
+    HardwareSerial* serial_;             ///< Serial interface
+    uint32_t baud_rate_;                 ///< Serial baud rate
+    uint8_t update_rate_;                ///< GPS update rate in Hz
+    
+    // ===== POSITION DATA =====
+    GPSPosition position_;               ///< Current position data
+    GPSTime time_;                       ///< Current time data
+    GPSSatellite satellites_[GPS_MAX_SATELLITES]; ///< Satellite data
+    uint8_t satellite_count_;            ///< Number of satellites used
+    uint32_t last_fix_time_;             ///< Last valid fix timestamp
+    uint32_t fix_timeout_;               ///< Fix timeout in milliseconds
+    
+    // ===== SATELLITE DATA =====
+    uint8_t visible_satellites_;         ///< Number of visible satellites
+    uint8_t used_satellites_;            ///< Number of satellites used in fix
+    float satellite_snr_[GPS_MAX_SATELLITES];            ///< Satellite signal-to-noise ratios
+    
+    // ===== NMEA PARSING =====
+    char nmea_buffer_[256];              ///< NMEA sentence buffer
+    uint8_t buffer_index_;               ///< Buffer index
+    uint32_t total_sentences_;           ///< Total sentences received
+    uint32_t valid_sentences_;           ///< Valid sentences parsed
+    uint32_t parse_errors_;              ///< Parse errors encountered
+    uint32_t checksum_errors_;           ///< Checksum errors
+    
+    // ===== CALLBACKS =====
+    void (*fix_callback_)(const GPSPosition&);      ///< Position fix callback
+    void (*satellite_callback_)(uint8_t count);     ///< Satellite count callback
+    void (*nmea_callback_)(const char* sentence);   ///< NMEA sentence callback
+    
+    // ===== POWER MANAGEMENT =====
+    bool standby_mode_;                  ///< Standby mode state
+    uint32_t last_activity_time_;        ///< Last activity timestamp
+    
+    // ===== PRIVATE METHODS =====
+    bool parseNMEASentence(const char* sentence);
+    bool parseGGA(const char* sentence);
+    bool parseRMC(const char* sentence);
+    bool parseGSV(const char* sentence);
+    bool parseGSA(const char* sentence);
+    bool verifyChecksum(const char* sentence);
+    uint8_t calculateChecksum(const char* sentence);
+    bool sendCommand(const char* command);
+    int tokenize(const char* sentence, char** tokens, int max_tokens);
+    bool parseGGA(char** tokens, uint8_t token_count);
+    bool parseRMC(char** tokens, uint8_t token_count);
+    bool parseGSV(char** tokens, uint8_t token_count);
+    bool parseGSA(char** tokens, uint8_t token_count);
+
 public:
     /**
      * @brief Constructor
@@ -106,7 +152,7 @@ public:
     
     /**
      * @brief Initialize the GPS driver
-     * @param baud_rate Serial baud rate (default 9600)
+     * @param baud_rate Serial baud rate (default: 9600)
      * @return true if successful, false otherwise
      */
     bool initialize(uint32_t baud_rate = 9600);
@@ -122,72 +168,44 @@ public:
      */
     bool isInitialized() const { return initialized_; }
     
-    // ===== POWER MANAGEMENT =====
+    // ===== POSITION AND NAVIGATION =====
     
     /**
-     * @brief Enable GPS module power
-     * @return true if successful
-     */
-    bool powerOn();
-    
-    /**
-     * @brief Disable GPS module power
-     * @return true if successful
-     */
-    bool powerOff();
-    
-    /**
-     * @brief Check if GPS module is powered
-     * @return true if powered on
-     */
-    bool isPowered() const { return powered_; }
-    
-    // ===== DATA ACQUISITION =====
-    
-    /**
-     * @brief Update GPS data by processing incoming NMEA sentences
-     * @return true if new data processed
-     */
-    bool update();
-    
-    /**
-     * @brief Get current position data
-     * @param position Reference to position structure to fill
+     * @brief Get current position
+     * @param position Reference to position structure
      * @return true if valid position available
      */
     bool getPosition(GPSPosition& position);
     
     /**
-     * @brief Get current GPS time
-     * @param time Reference to time structure to fill
-     * @return true if valid time available
+     * @brief Get current time
+     * @param time Reference to time structure
+     * @return true if time data is valid
      */
     bool getTime(GPSTime& time);
-    
+
     /**
-     * @brief Get satellite information
-     * @param satellites Array to store satellite data
-     * @param max_satellites Maximum number of satellites to store
-     * @return Number of satellites stored
+     * @brief Get satellite data
+     * @param satellites Array to fill with satellite data
+     * @param max_satellites Maximum number of satellites to return
+     * @return Number of satellites returned
      */
     uint8_t getSatellites(GPSSatellite* satellites, uint8_t max_satellites);
     
-    // ===== STATUS QUERIES =====
-    
     /**
-     * @brief Check if GPS has a valid fix
-     * @return true if fix available
+     * @brief Check if position fix is valid
+     * @return true if valid fix
      */
-    bool hasFix() const { return position_.valid && position_.fix_type >= GPS_FIX_2D; }
+    bool isFixValid() const;
     
     /**
-     * @brief Get fix type
-     * @return Current fix type
+     * @brief Get fix quality
+     * @return Fix quality indicator
      */
-    GPSFixType getFixType() const { return position_.fix_type; }
+    GPSFixQuality getFixQuality() const;
     
     /**
-     * @brief Get number of satellites in use
+     * @brief Get number of satellites used
      * @return Satellite count
      */
     uint8_t getSatelliteCount() const { return position_.satellites; }
@@ -199,8 +217,26 @@ public:
     float getHDOP() const { return position_.hdop; }
     
     /**
-     * @brief Get age of last fix in milliseconds
-     * @return Age in milliseconds
+     * @brief Get altitude
+     * @return Altitude in meters
+     */
+    float getAltitude() const;
+    
+    /**
+     * @brief Get speed
+     * @return Speed in knots
+     */
+    double getSpeed() const { return position_.speed_knots; }
+    
+    /**
+     * @brief Get course
+     * @return Course in degrees
+     */
+    double getCourse() const { return position_.course; }
+
+    /**
+     * @brief Get fix age in milliseconds
+     * @return Fix age in milliseconds
      */
     uint32_t getFixAge() const;
     
@@ -208,181 +244,108 @@ public:
     
     /**
      * @brief Set GPS update rate
-     * @param rate_hz Update rate in Hz (1-10)
+     * @param rate_hz Update rate in Hz (1, 5, 10)
      * @return true if successful
      */
     bool setUpdateRate(uint8_t rate_hz);
     
     /**
-     * @brief Enable/disable specific NMEA sentences
-     * @param sentence NMEA sentence type (e.g., "GGA", "RMC")
-     * @param enable true to enable, false to disable
+     * @brief Set serial baud rate
+     * @param baud_rate Baud rate
      * @return true if successful
      */
-    bool enableNMEASentence(const char* sentence, bool enable);
+    bool setBaudRate(uint32_t baud_rate);
     
     /**
-     * @brief Set navigation mode
-     * @param mode Navigation mode (0=pedestrian, 1=automotive, 2=sea, 3=airborne)
+     * @brief Get current baud rate
+     * @return Baud rate
+     */
+    uint32_t getBaudRate() const { return baud_rate_; }
+    
+    /**
+     * @brief Get current update rate
+     * @return Update rate in Hz
+     */
+    uint8_t getUpdateRate() const { return update_rate_; }
+    
+    // ===== POWER MANAGEMENT =====
+    
+    /**
+     * @brief Enter standby mode
      * @return true if successful
      */
-    bool setNavigationMode(uint8_t mode);
-    
-    // ===== UTILITIES =====
+    bool enterStandby();
     
     /**
-     * @brief Calculate distance between two points
-     * @param lat1 Latitude of first point
-     * @param lon1 Longitude of first point
-     * @param lat2 Latitude of second point
-     * @param lon2 Longitude of second point
-     * @return Distance in meters
+     * @brief Wake up from standby
+     * @return true if successful
      */
-    static double calculateDistance(double lat1, double lon1, double lat2, double lon2);
+    bool wakeup();
     
     /**
-     * @brief Calculate bearing between two points
-     * @param lat1 Latitude of first point
-     * @param lon1 Longitude of first point
-     * @param lat2 Latitude of second point
-     * @param lon2 Longitude of second point
-     * @return Bearing in degrees
+     * @brief Check if in standby mode
+     * @return true if in standby
      */
-    static double calculateBearing(double lat1, double lon1, double lat2, double lon2);
-    
-    /**
-     * @brief Convert coordinates to different formats
-     * @param decimal_degrees Input in decimal degrees
-     * @param degrees Output degrees
-     * @param minutes Output minutes
-     * @param seconds Output seconds
-     */
-    static void convertToDMS(double decimal_degrees, int& degrees, int& minutes, float& seconds);
+    bool isStandby() const { return standby_mode_; }
     
     // ===== CALLBACKS =====
     
     /**
-     * @brief Set callback for position updates
+     * @brief Set position fix callback
      * @param callback Function to call when position updated
      */
-    void setPositionCallback(void (*callback)(const GPSPosition&));
+    void setFixCallback(void (*callback)(const GPSPosition&));
     
     /**
-     * @brief Set callback for time updates
-     * @param callback Function to call when time updated
+     * @brief Set satellite count callback
+     * @param callback Function to call when satellite count changes
      */
-    void setTimeCallback(void (*callback)(const GPSTime&));
-
-private:
-    // ===== INTERNAL METHODS =====
+    void setSatelliteCallback(void (*callback)(uint8_t count));
     
     /**
-     * @brief Initialize hardware pins
-     * @return true if successful
+     * @brief Set NMEA sentence callback
+     * @param callback Function to call when NMEA sentence received
      */
-    bool initializeHardware();
+    void setNMEACallback(void (*callback)(const char* sentence));
+    
+    // ===== STATISTICS =====
     
     /**
-     * @brief Initialize serial communication
-     * @param baud_rate Serial baud rate
-     * @return true if successful
+     * @brief Get total sentences received
+     * @return Total sentence count
      */
-    bool initializeSerial(uint32_t baud_rate);
+    uint32_t getTotalSentences() const;
     
     /**
-     * @brief Process incoming NMEA sentence
-     * @param sentence NMEA sentence string
-     * @return true if sentence processed successfully
+     * @brief Get valid sentences parsed
+     * @return Valid sentence count
      */
-    bool processNMEASentence(const char* sentence);
+    uint32_t getValidSentences() const;
     
     /**
-     * @brief Parse GGA sentence (Global Positioning System Fix Data)
-     * @param tokens Array of sentence tokens
-     * @param token_count Number of tokens
-     * @return true if parsed successfully
+     * @brief Get parse errors
+     * @return Parse error count
      */
-    bool parseGGA(char** tokens, uint8_t token_count);
+    uint32_t getParseErrors() const;
     
     /**
-     * @brief Parse RMC sentence (Recommended Minimum)
-     * @param tokens Array of sentence tokens
-     * @param token_count Number of tokens
-     * @return true if parsed successfully
+     * @brief Get parse success rate
+     * @return Success rate as percentage
      */
-    bool parseRMC(char** tokens, uint8_t token_count);
+    float getParseSuccessRate() const;
+    
+    // ===== LOW-LEVEL COMMUNICATION =====
     
     /**
-     * @brief Parse GSV sentence (Satellites in View)
-     * @param tokens Array of sentence tokens
-     * @param token_count Number of tokens
-     * @return true if parsed successfully
+     * @brief Update GPS data (call regularly)
+     * @return void
      */
-    bool parseGSV(char** tokens, uint8_t token_count);
+    void update();
     
     /**
-     * @brief Parse GSA sentence (GPS DOP and active satellites)
-     * @param tokens Array of sentence tokens
-     * @param token_count Number of tokens
-     * @return true if parsed successfully
+     * @brief Process incoming serial data
      */
-    bool parseGSA(char** tokens, uint8_t token_count);
-    
-    /**
-     * @brief Validate NMEA sentence checksum
-     * @param sentence NMEA sentence
-     * @return true if checksum valid
-     */
-    bool validateChecksum(const char* sentence);
-    
-    /**
-     * @brief Convert latitude/longitude from NMEA format
-     * @param coord_str Coordinate string from NMEA
-     * @param direction Direction character (N/S/E/W)
-     * @return Coordinate in decimal degrees
-     */
-    double convertCoordinate(const char* coord_str, char direction);
-    
-    /**
-     * @brief Convert time from NMEA format
-     * @param time_str Time string from NMEA (HHMMSS.SSS)
-     * @param time_struct Time structure to fill
-     */
-    void convertTime(const char* time_str, GPSTime& time_struct);
-    
-    /**
-     * @brief Convert date from NMEA format
-     * @param date_str Date string from NMEA (DDMMYY)
-     * @param time_struct Time structure to fill
-     */
-    void convertDate(const char* date_str, GPSTime& time_struct);
-    
-    // ===== MEMBER VARIABLES =====
-    
-    bool initialized_;                    ///< Driver initialization state
-    bool powered_;                        ///< GPS module power state
-    HardwareSerial* serial_;              ///< Serial interface for GPS communication
-    uint32_t baud_rate_;                  ///< Serial baud rate
-    
-    // Current GPS data
-    GPSPosition position_;                ///< Current position data
-    GPSTime time_;                        ///< Current time data
-    GPSSatellite satellites_[12];         ///< Satellite information array
-    uint8_t satellite_count_;             ///< Number of satellites tracked
-    
-    // NMEA parsing
-    char nmea_buffer_[128];               ///< Buffer for incoming NMEA data
-    uint8_t buffer_index_;                ///< Current buffer position
-    uint32_t last_fix_time_;              ///< Timestamp of last position fix
-    
-    // Statistics
-    uint32_t sentence_count_;             ///< Total NMEA sentences processed
-    uint32_t valid_sentences_;            ///< Valid NMEA sentences processed
-    uint32_t checksum_errors_;            ///< Checksum error count
-    
-    // Callbacks
-    void (*position_callback_)(const GPSPosition&); ///< Position update callback
-    void (*time_callback_)(const GPSTime&);         ///< Time update callback
+    void processSerialData();
 };
 
 #endif // GPS_DRIVER_H

@@ -7,8 +7,9 @@
  */
 
 #include "gps_driver.h"
-#include "../config/os_config_corrected.h"
 #include <Arduino.h>
+#include "config/os_config_corrected.h"
+#include <cstring>
 #include <HardwareSerial.h>
 
 // NMEA sentence types
@@ -115,10 +116,6 @@ void GPSDriver::deinitialize() {
     Serial.println("[GPS] Deinitialized");
 }
 
-bool GPSDriver::isInitialized() const {
-    return initialized_;
-}
-
 void GPSDriver::update() {
     if (!initialized_ || !serial_) {
         return;
@@ -133,7 +130,7 @@ void GPSDriver::update() {
                 nmea_buffer_[buffer_index_] = '\0';
                 
                 // Parse the sentence
-                if (parsNMEASentence(nmea_buffer_)) {
+                if (parseNMEASentence(nmea_buffer_)) {
                     valid_sentences_++;
                     
                     // Call NMEA callback if set
@@ -187,19 +184,11 @@ uint8_t GPSDriver::getSatellites(GPSSatellite* satellites, uint8_t max_satellite
 }
 
 bool GPSDriver::isFixValid() const {
-    return position_.fix_quality != GPS_FIX_INVALID && position_.fix_quality != GPS_FIX_NONE;
+    return position_.fix_quality != GPS_FIX_INVALID && position_.fix_type != GPS_FIX_NONE;
 }
 
-GPS_FixQuality GPSDriver::getFixQuality() const {
+GPSFixQuality GPSDriver::getFixQuality() const {
     return position_.fix_quality;
-}
-
-uint8_t GPSDriver::getSatelliteCount() const {
-    return position_.satellites;
-}
-
-float GPSDriver::getHDOP() const {
-    return position_.hdop;
 }
 
 float GPSDriver::getAltitude() const {
@@ -343,7 +332,7 @@ bool GPSDriver::sendCommand(const char* command) {
     return true;
 }
 
-bool GPSDriver::parsNMEASentence(const char* sentence) {
+bool GPSDriver::parseNMEASentence(const char* sentence) {
     if (!sentence || sentence[0] != '$') {
         return false;
     }
@@ -538,9 +527,9 @@ bool GPSDriver::parseGSA(const char* sentence) {
     if (strlen(tokens[2]) > 0) {
         int fix_type = atoi(tokens[2]);
         switch (fix_type) {
-            case 1: position_.fix_quality = GPS_FIX_NONE; break;
-            case 2: position_.fix_quality = GPS_FIX_2D; break;
-            case 3: position_.fix_quality = GPS_FIX_3D; break;
+            case 1: position_.fix_type = GPS_FIX_NONE; break;
+            case 2: position_.fix_type = GPS_FIX_2D; break;
+            case 3: position_.fix_type = GPS_FIX_3D; break;
         }
     }
     

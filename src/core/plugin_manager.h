@@ -12,7 +12,7 @@
 #include <SD.h>
 #include <ArduinoJson.h>
 #include <vector>
-#include "../config/os_config.h"
+#include "config/os_config_corrected.h"
 
 /**
  * @brief Plugin/App information structure

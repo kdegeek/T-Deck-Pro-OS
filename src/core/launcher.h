@@ -11,7 +11,7 @@
 #include <Arduino.h>
 #include <lvgl.h>
 #include <vector>
-#include "../config/os_config.h"
+#include "config/os_config_corrected.h"
 
 // Forward declaration
 class UILauncher;

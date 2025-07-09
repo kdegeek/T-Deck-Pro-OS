@@ -13,7 +13,7 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <queue>
-#include "../config/os_config.h"
+#include "config/os_config_corrected.h"
 
 /**
  * @brief MQTT message structure

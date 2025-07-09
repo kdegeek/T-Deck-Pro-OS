@@ -12,7 +12,7 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include "../config/os_config.h"
+#include "config/os_config_corrected.h"
 
 /**
  * @brief Tailscale connection status

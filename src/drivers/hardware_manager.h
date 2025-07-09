@@ -3,6 +3,7 @@
  * @brief T-Deck-Pro Hardware Manager - Centralized hardware initialization
  * @author T-Deck-Pro OS Team
  * @date 2025
+ * @note Completely rewritten to match corrected implementation
  */
 
 #ifndef HARDWARE_MANAGER_H
@@ -12,7 +13,10 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <vector>
-#include "../config/os_config.h"
+#include <map>
+#include <string>
+#include <cstdint>
+#include "config/os_config_corrected.h"
 
 /**
  * @brief Hardware component status
@@ -37,7 +41,19 @@ struct HardwareComponent {
 };
 
 /**
+ * @brief Peripheral state tracking
+ */
+struct PeripheralState {
+    bool detected;
+    bool enabled;
+    bool initialized;
+    uint32_t last_check;
+    String error_message;
+};
+
+/**
  * @brief Centralized hardware manager for all T-Deck-Pro components
+ * @note Completely rewritten with corrected pin configurations
  */
 class HardwareManager {
 public:
@@ -49,6 +65,11 @@ public:
      * @return true if all required components initialized successfully
      */
     bool initialize();
+    
+    /**
+     * @brief Deinitialize hardware components
+     */
+    void deinitialize();
     
     /**
      * @brief Update hardware status (call periodically)
@@ -75,10 +96,15 @@ public:
     bool is_system_ready();
     
     /**
-     * @brief Get battery voltage in millivolts
+     * @brief Get battery voltage in volts
      * @return Battery voltage or 0 if unavailable
      */
-    uint16_t get_battery_voltage();
+    float getBatteryVoltage();
+    
+    /**
+     * @brief Update battery voltage reading
+     */
+    void updateBatteryVoltage();
     
     /**
      * @brief Check if USB power is connected
@@ -100,8 +126,97 @@ public:
      */
     bool set_component_enabled(const String& component_name, bool enable);
     
+    // ===== PERIPHERAL DETECTION =====
+    
+    /**
+     * @brief Check if display is available
+     * @return true if display detected
+     */
+    bool isDisplayAvailable() const;
+    
+    /**
+     * @brief Check if WiFi is available
+     * @return true if WiFi detected
+     */
+    bool isWiFiAvailable() const;
+    
+    /**
+     * @brief Check if 4G modem is available
+     * @return true if modem detected
+     */
+    bool isModemAvailable() const;
+    
+    /**
+     * @brief Check if LoRa is available
+     * @return true if LoRa detected
+     */
+    bool isLoRaAvailable() const;
+    
+    /**
+     * @brief Check if GPS is available
+     * @return true if GPS detected
+     */
+    bool isGPSAvailable() const;
+    
+    /**
+     * @brief Check if SD card is available
+     * @return true if SD card detected
+     */
+    bool isSDCardAvailable() const;
+    
+    /**
+     * @brief Process hardware events
+     */
+    void processEvents();
+    
+    /**
+     * @brief Check if hardware manager is initialized
+     * @return true if initialized
+     */
+    bool isInitialized() const { return initialized_; }
+    
+    uint16_t get_battery_voltage();
+    
 private:
-    // Component initialization functions
+    // ===== CORE INITIALIZATION =====
+    
+    /**
+     * @brief Validate hardware configuration
+     * @return true if configuration is valid
+     */
+    bool validateConfiguration();
+    
+    /**
+     * @brief Initialize GPIO pins
+     * @return true if successful
+     */
+    bool initializeGPIO();
+    
+    /**
+     * @brief Initialize SPI bus
+     * @return true if successful
+     */
+    bool initializeSPI();
+    
+    /**
+     * @brief Initialize I2C bus
+     * @return true if successful
+     */
+    bool initializeI2C();
+    
+    /**
+     * @brief Initialize power management
+     * @return true if successful
+     */
+    bool initializePowerManagement();
+    
+    /**
+     * @brief Detect and initialize peripherals
+     * @return true if successful
+     */
+    bool detectPeripherals();
+    
+    // ===== INITIALIZATION METHODS =====
     bool init_power_management();
     bool init_i2c_bus();
     bool init_spi_bus();
@@ -112,15 +227,63 @@ private:
     bool init_connectivity();
     bool init_storage();
     bool init_audio();
-    
-    // Component status checking
+
+    // ===== CHECK METHODS =====
     void check_power_status();
     void check_sensor_status();
     void check_connectivity_status();
+
+    // ===== PERIPHERAL DETECTION =====
     
-    // Utility functions
+    /**
+     * @brief Check if I2C device is present
+     * @param address I2C address to check
+     * @return true if device found
+     */
+    bool isI2CDevicePresent(uint8_t address);
+    
+    /**
+     * @brief Enable peripheral
+     * @param peripheral Peripheral name
+     * @return true if successful
+     */
+    bool enablePeripheral(const char* peripheral);
+    
+    /**
+     * @brief Disable peripheral
+     * @param peripheral Peripheral name
+     * @return true if successful
+     */
+    bool disablePeripheral(const char* peripheral);
+    
+    // ===== UTILITY FUNCTIONS =====
+    
+    /**
+     * @brief Set component status
+     * @param name Component name
+     * @param status Component status
+     * @param error Error message
+     */
     void set_component_status(const String& name, HardwareStatus status, const String& error = "");
+    
+    /**
+     * @brief Find component by name
+     * @param name Component name
+     * @return Pointer to component or nullptr
+     */
     HardwareComponent* find_component(const String& name);
+    
+    // ===== HARDWARE STATE =====
+    
+    bool initialized_;                    ///< Overall initialization state
+    bool spi_initialized_;               ///< SPI bus initialization state
+    bool i2c_initialized_;              ///< I2C bus initialization state
+    bool power_management_initialized_;  ///< Power management initialization state
+    
+    float battery_voltage_;              ///< Current battery voltage
+    uint32_t last_battery_check_;       ///< Last battery check timestamp
+    
+    std::map<String, PeripheralState> peripheral_states_;  ///< Peripheral state tracking
     
     // Hardware components tracking
     std::vector<HardwareComponent> components;
@@ -130,11 +293,8 @@ private:
     uint32_t last_health_check;
     uint32_t initialization_start_time;
     
-    // Hardware objects (will be initialized as needed)
-    bool i2c_initialized;
-    bool spi_initialized;
-    
     static const uint32_t HEALTH_CHECK_INTERVAL = 5000; // 5 seconds
+    static const uint32_t BATTERY_CHECK_INTERVAL = 30000; // 30 seconds
 };
 
 #endif // HARDWARE_MANAGER_H

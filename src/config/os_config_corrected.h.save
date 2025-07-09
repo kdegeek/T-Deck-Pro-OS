@@ -1,4 +1,5 @@
-/**
+q
+**
  * @file os_config.h
  * @brief T-Deck-Pro Simplified OS Configuration - CORRECTED HARDWARE PINS
  * @author T-Deck-Pro OS Team
@@ -98,7 +99,6 @@
 #define BOARD_EPD_CS   34   // CORRECTED: was 10, now matches reference
 #define BOARD_EPD_BUSY 37   // CORRECTED: was 13, now matches reference
 #define BOARD_EPD_RST  -1   // CORRECTED: was 12, now matches reference
-#define BOARD_EPD_MISO BOARD_SPI_MISO
 
 // ===== SD CARD - CORRECTED =====
 #define BOARD_SD_CS   48    // CORRECTED: matches reference
@@ -218,14 +218,22 @@
 #define BOARD_MODEM_EN      BOARD_6609_EN
 
 // ===== KEYBOARD PINS =====
+#define BOARD_KB_INT        BOARD_KEYBOARD_INT
+#define BOARD_KB_LED        BOARD_KEYBOARD_LED
 
 // ===== TOUCH PINS =====
+#define BOARD_TOUCH_INT     BOARD_TOUCH_INT
+#define BOARD_TOUCH_RST     BOARD_TOUCH_RST
 
 // ===== LIGHT SENSOR PINS =====
+#define BOARD_ALS_INT       BOARD_ALS_INT
 
 // ===== GYROSCOPE PINS =====
+#define BOARD_GYRO_INT      BOARD_GYROSCOPE_INT
+#define BOARD_GYRO_EN       BOARD_1V8_EN
 
 // ===== LORA PINS =====
+#define BOARD_LORA_DIO1     BOARD_LORA_INT
 
 // ===== PIN ALIASES FOR COMPATIBILITY =====
 #define T_DECK_I2C_SDA      BOARD_I2C_SDA
