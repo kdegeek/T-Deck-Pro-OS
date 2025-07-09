@@ -254,7 +254,7 @@ public:
      * @param unreadOnly Read only unread messages
      * @return Vector of SMS messages
      */
-    std::vector<SMSMessage> readSMS(bool unreadOnly = true);
+    // std::vector<SMSMessage> readSMS(bool unreadOnly);
 
     /**
      * @brief Delete SMS message

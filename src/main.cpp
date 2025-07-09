@@ -1,6 +1,6 @@
 /**
- * @file main_updated.cpp
- * @brief T-Deck-Pro OS Main Application with Complete Integration
+ * @file main.cpp
+ * @brief T-Deck-Pro Simplified OS Main Application
  * @author T-Deck-Pro OS Team
  * @date 2025
  */
@@ -9,31 +9,41 @@
 #include <WiFi.h>
 #include <SPIFFS.h>
 #include <SD.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-#include <esp_task_wdt.h>
+#include <Wire.h>
+#include <SPI.h>
 
 // Core OS Components
-#include "core/hal/board_config.h"
-#include "core/utils/logger.h"
+#include "config/os_config.h"
+#include "drivers/hardware_manager.h"
+#include "core/boot_manager.h"
+#include "core/launcher.h"
+#include "core/communication/mqtt_manager.h"
+#include "core/communication/tailscale_manager.h"
+#include "core/apps/plugin_manager.h"
 
-#include "core/display/eink_manager.h"
-#include "core/storage/storage_manager.h"
-#include "core/ui/launcher.h"
-#include "core/server/server_integration.h"
+// Global OS Components
+HardwareManager hardware;
+BootManager boot;
+Launcher launcher;
+MQTTManager mqtt;
+TailscaleManager tailscale;
+PluginManager plugins;
 
-// LVGL Configuration
-#include "lvgl.h"
+// System State
+bool system_ready = false;
+bool emergency_mode = false;
+String last_error = "";
+uint32_t last_heartbeat = 0;
+uint32_t last_status_update = 0;
+uint32_t boot_start_time = 0;
 
-
-// Application Framework
-#include "core/apps/app_manager.h"
-#include "apps/meshtastic_app.h"
-#include "apps/file_manager_app.h"
-#include "apps/settings_app.h"
-
-// Communication Stack
-#include "core/communication/communication_manager.h"
+// Forward declarations
+void handle_emergency_mode();
+void send_system_heartbeat();
+void update_system_status();
+void handle_mqtt_app_launch(const String& app_name, const String& parameters);
+void handle_system_shutdown();
+void print_system_info();
 
 static const char* TAG = "Main";
 // ===== GLOBAL VARIABLES =====
@@ -67,130 +77,420 @@ void onServerAppCommand(const AppCommand& command);
  * @brief Arduino setup function - Complete system initialization
  */
 void setup() {
+    boot_start_time = millis();
+    
     // Initialize serial communication
     Serial.begin(115200);
     while (!Serial && millis() < 5000) {
         delay(10);
     }
     
-    Serial.println("\n=== T-Deck-Pro OS v2.0 Starting ===");
-    Serial.printf("Build: %s %s\n", __DATE__, __TIME__);
-    Serial.printf("ESP32-S3 Chip: %s\n", ESP.getChipModel());
-    Serial.printf("CPU Frequency: %d MHz\n", ESP.getCpuFreqMHz());
-    Serial.printf("Flash Size: %d MB\n", ESP.getFlashChipSize() / (1024 * 1024));
-    Serial.printf("PSRAM Size: %d MB\n", ESP.getPsramSize() / (1024 * 1024));
+    Serial.println("\n" + String("=").substring(0, 50));
+    Serial.println("T-Deck-Pro Simplified OS v2.0");
+    Serial.println("Build: " + String(__DATE__) + " " + String(__TIME__));
+    Serial.println(String("=").substring(0, 50) + "\n");
     
-    // Initialize logging system
-    Logger::setLogLevel(Logger::LOG_DEBUG);
-    Logger::info(TAG, "Logging system initialized");
+    // Phase 1: Boot Manager Initialization
+    Serial.println("[BOOT] Phase 1: Boot Manager");
+    boot.set_boot_stage(BootStage::POWER_ON);
     
-    Logger::info(TAG, "T-Deck-Pro OS v2.0 initialization started");
-    
-    // Phase 1: Hardware initialization
-    setup_hardware();
-    
-    // Phase 2: Storage system initialization
-    setup_storage();
-    
-    // Phase 3: Initialize LVGL and display
-    lv_init();
-    
-    if (!eink_manager.initialize()) {
-        Logger::error("Main", "Failed to initialize E-ink display");
-        while (1) delay(1000);
+    if (!boot.initialize()) {
+        Serial.println("[ERROR] Boot manager initialization failed");
+        emergency_mode = true;
+        return;
     }
     
+    boot.show_splash_screen();
+    boot.set_boot_stage(BootStage::HARDWARE_INIT);
     
-    // Phase 4: Communication systems
-    setup_communication();
+    // Phase 2: Hardware Initialization
+    Serial.println("[BOOT] Phase 2: Hardware Initialization");
+    boot.display_progress("Initializing Hardware...", 10);
     
-    // Phase 5: Server integration
-    setup_server_integration();
+    if (!hardware.initialize()) {
+        Serial.println("[ERROR] Hardware initialization failed");
+        boot.display_error("Hardware Init Failed", hardware.get_last_error());
+        emergency_mode = true;
+        return;
+    }
     
-    // Phase 6: Application framework
-    setup_applications();
+    boot.set_boot_stage(BootStage::STORAGE_INIT);
     
-    // Phase 7: Launcher UI
-    setup_launcher();
+    // Phase 3: Storage Initialization
+    Serial.println("[BOOT] Phase 3: Storage Systems");
+    boot.display_progress("Initializing Storage...", 25);
     
-    // Create system tasks
-    xTaskCreatePinnedToCore(
-        main_task,
-        "main_task",
-        8192,
-        NULL,
-        1,
-        &main_task_handle,
-        0
-    );
+    // Initialize SPIFFS for system data
+    if (!SPIFFS.begin(true)) {
+        Serial.println("[WARNING] SPIFFS initialization failed");
+        // Continue without SPIFFS - not critical
+    } else {
+        Serial.println("[BOOT] SPIFFS initialized");
+    }
     
-    xTaskCreatePinnedToCore(
-        ui_task,
-        "ui_task",
-        16384,
-        NULL,
-        3,  // Higher priority for UI responsiveness
-        &ui_task_handle,
-        1
-    );
+    // Initialize SD card for apps and data
+    if (!SD.begin(SD_CS_PIN)) {
+        Serial.println("[WARNING] SD card initialization failed");
+        // Continue without SD - plugins won't work but core OS will
+    } else {
+        Serial.println("[BOOT] SD card initialized");
+    }
     
-    xTaskCreatePinnedToCore(
-        comm_task,
-        "comm_task",
-        8192,
-        NULL,
-        2,
-        &comm_task_handle,
-        0
-    );
+    boot.set_boot_stage(BootStage::DISPLAY_INIT);
     
-    xTaskCreatePinnedToCore(
-        server_task,
-        "server_task",
-        8192,
-        NULL,
-        2,
-        &server_task_handle,
-        0
-    );
+    // Phase 4: Display and Input
+    Serial.println("[BOOT] Phase 4: Display and Input");
+    boot.display_progress("Initializing Display...", 40);
     
-    // Start E-ink maintenance task
-    xTaskCreate(
-        eink_maintenance_task,
-        "eink_maintenance",
-        4096,
-        NULL,
-        1,
-        NULL
-    );
+    if (!hardware.is_display_ready()) {
+        Serial.println("[ERROR] Display not ready");
+        boot.display_error("Display Failed", "E-ink display not responding");
+        emergency_mode = true;
+        return;
+    }
     
-    systemInitialized = true;
-    Logger::info("Main", "T-Deck-Pro OS v2.0 initialization completed");
-    Serial.println("=== System Ready - Launcher Active ===\n");
+    if (!hardware.is_touch_ready()) {
+        Serial.println("[WARNING] Touch not ready - continuing without touch");
+    }
+    
+    if (!hardware.is_keyboard_ready()) {
+        Serial.println("[WARNING] Keyboard not ready - continuing without keyboard");
+    }
+    
+    boot.set_boot_stage(BootStage::CONNECTIVITY_INIT);
+    
+    // Phase 5: Connectivity
+    Serial.println("[BOOT] Phase 5: Connectivity");
+    boot.display_progress("Initializing Connectivity...", 55);
+    
+    // Initialize WiFi
+    WiFi.mode(WIFI_STA);
+    Serial.println("[BOOT] WiFi initialized in station mode");
+    
+    // Initialize other connectivity (4G, LoRa, Bluetooth)
+    if (hardware.is_modem_ready()) {
+        Serial.println("[BOOT] 4G modem ready");
+    }
+    
+    if (hardware.is_lora_ready()) {
+        Serial.println("[BOOT] LoRa ready");
+    }
+    
+    boot.set_boot_stage(BootStage::SERVICES_INIT);
+    
+    // Phase 6: Core Services
+    Serial.println("[BOOT] Phase 6: Core Services");
+    boot.display_progress("Starting Services...", 70);
+    
+    // Initialize MQTT Manager
+    if (!mqtt.initialize()) {
+        Serial.println("[WARNING] MQTT initialization failed - continuing without MQTT");
+    } else {
+        Serial.println("[BOOT] MQTT manager initialized");
+    }
+    
+    // Initialize Tailscale Manager
+    if (!tailscale.initialize()) {
+        Serial.println("[WARNING] Tailscale initialization failed - continuing without VPN");
+    } else {
+        Serial.println("[BOOT] Tailscale manager initialized");
+    }
+    
+    // Initialize Plugin Manager
+    if (!plugins.initialize()) {
+        Serial.println("[WARNING] Plugin manager initialization failed - no SD card apps");
+    } else {
+        Serial.println("[BOOT] Plugin manager initialized");
+        
+        // Start autostart plugins
+        int autostart_count = plugins.start_autostart_plugins();
+        Serial.printf("[BOOT] Started %d autostart plugins\n", autostart_count);
+    }
+    
+    boot.display_progress("Starting Launcher...", 85);
+    
+    // Phase 7: Launcher
+    Serial.println("[BOOT] Phase 7: Launcher");
+    if (!launcher.initialize()) {
+        Serial.println("[ERROR] Launcher initialization failed");
+        boot.display_error("Launcher Failed", "Cannot start main interface");
+        emergency_mode = true;
+        return;
+    }
+    
+    boot.display_progress("System Ready", 100);
+    boot.set_boot_stage(BootStage::COMPLETE);
+    
+    // Phase 8: System Ready
+    Serial.println("[BOOT] Phase 8: System Ready");
+    
+    // Show boot completion on launcher
+    launcher.display_boot_completion(millis() - boot_start_time);
+    
+    // Connect to saved WiFi networks
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[SYSTEM] Attempting WiFi connection...");
+        // In real implementation, would load saved networks and connect
+    }
+    
+    // Connect MQTT if WiFi is available
+    if (WiFi.status() == WL_CONNECTED && !mqtt.is_connected()) {
+        mqtt.connect();
+    }
+    
+    // Start Tailscale if configured
+    if (tailscale.is_configured() && !tailscale.is_connected()) {
+        tailscale.connect();
+    }
+    
+    system_ready = true;
+    last_heartbeat = millis();
+    last_status_update = millis();
+    
+    print_system_info();
+    
+    Serial.println("[SYSTEM] T-Deck-Pro OS ready!");
+    Serial.printf("[SYSTEM] Boot time: %lu ms\n", millis() - boot_start_time);
+    Serial.printf("[SYSTEM] Free heap: %d bytes\n", ESP.getFreeHeap());
+    Serial.printf("[SYSTEM] Free PSRAM: %d bytes\n", ESP.getFreePsram());
 }
 
 /**
  * @brief Arduino loop function - System monitoring
  */
 void loop() {
-    static uint32_t last_heartbeat = 0;
-    uint32_t current_time = millis();
+    uint32_t loop_start = millis();
     
-    if (current_time - last_heartbeat >= 30000) { // 30 second heartbeat
-        size_t free_heap = ESP.getFreeHeap();
-        StorageStats storage = STORAGE_MGR.getStorageStats();
+    // Handle emergency mode
+    if (emergency_mode) {
+        handle_emergency_mode();
+        delay(1000);
+        return;
+    }
+    
+    // Update core components
+    if (system_ready) {
+        // Update hardware status
+        hardware.update();
         
-        Logger::debug(TAG, "System heartbeat - Free heap: %d KB, Flash: %.1f%%, SD: %.1f%%",
-                      free_heap / 1024, STORAGE_MGR.getFlashUsagePercent(), STORAGE_MGR.getSDUsagePercent());
+        // Update launcher UI
+        launcher.update();
         
-        last_heartbeat = current_time;
+        // Update connectivity services
+        if (WiFi.status() == WL_CONNECTED) {
+            mqtt.update();
+            tailscale.update();
+        }
+        
+        // Update plugin manager
+        plugins.update();
+        
+        // Handle MQTT app launch requests
+        if (mqtt.is_connected() && mqtt.has_pending_app_launch()) {
+            auto launch_request = mqtt.get_pending_app_launch();
+            handle_mqtt_app_launch(launch_request.app_name, launch_request.parameters);
+        }
+        
+        // Send system heartbeat
+        if (loop_start - last_heartbeat > 30000) { // 30 second heartbeat
+            send_system_heartbeat();
+            last_heartbeat = loop_start;
+        }
+        
+        // Update system status
+        if (loop_start - last_status_update > 5000) { // 5 second status update
+            update_system_status();
+            last_status_update = loop_start;
+        }
+        
+        // Check for system shutdown request
+        if (hardware.is_power_button_long_pressed()) {
+            handle_system_shutdown();
+        }
     }
     
     // Feed watchdog
     esp_task_wdt_reset();
     
-    // Small delay to prevent tight loop
-    delay(100);
+    // Maintain target loop frequency
+     uint32_t loop_time = millis() - loop_start;
+     if (loop_time < MAIN_LOOP_INTERVAL) {
+         delay(MAIN_LOOP_INTERVAL - loop_time);
+     }
+ }
+
+void handle_emergency_mode() {
+    static uint32_t last_emergency_update = 0;
+    uint32_t now = millis();
+    
+    if (now - last_emergency_update > 5000) {
+        Serial.println("[EMERGENCY] System in emergency mode");
+        Serial.println("[EMERGENCY] Last error: " + last_error);
+        Serial.println("[EMERGENCY] Press reset to restart");
+        
+        // Try to show emergency message on display if possible
+        if (hardware.is_display_ready()) {
+            boot.display_error("EMERGENCY MODE", "System Error - Reset Required");
+        }
+        
+        last_emergency_update = now;
+    }
+    
+    // Blink LED if available
+    static bool led_state = false;
+    static uint32_t last_blink = 0;
+    
+    if (now - last_blink > 500) {
+        led_state = !led_state;
+        // Set LED state if available
+        last_blink = now;
+    }
+}
+
+void send_system_heartbeat() {
+    if (!mqtt.is_connected()) {
+        return;
+    }
+    
+    DynamicJsonDocument heartbeat(512);
+    heartbeat["timestamp"] = millis();
+    heartbeat["uptime"] = millis() - boot_start_time;
+    heartbeat["free_heap"] = ESP.getFreeHeap();
+    heartbeat["free_psram"] = ESP.getFreePsram();
+    heartbeat["wifi_rssi"] = WiFi.RSSI();
+    heartbeat["running_plugins"] = plugins.get_running_plugins().size();
+    heartbeat["system_ready"] = system_ready;
+    heartbeat["emergency_mode"] = emergency_mode;
+    
+    String heartbeat_str;
+    serializeJson(heartbeat, heartbeat_str);
+    
+    mqtt.publish_telemetry("heartbeat", heartbeat_str);
+}
+
+void update_system_status() {
+    // Update launcher with current system status
+    SystemStatus status;
+    
+    // Connectivity status
+    status.wifi_connected = (WiFi.status() == WL_CONNECTED);
+    status.wifi_rssi = WiFi.RSSI();
+    status.mqtt_connected = mqtt.is_connected();
+    status.tailscale_connected = tailscale.is_connected();
+    status.modem_connected = hardware.is_modem_ready();
+    status.lora_enabled = hardware.is_lora_ready();
+    
+    // System resources
+    status.free_heap = ESP.getFreeHeap();
+    status.free_psram = ESP.getFreePsram();
+    status.uptime = millis() - boot_start_time;
+    
+    // Hardware status
+    status.battery_level = hardware.get_battery_level();
+    status.charging = hardware.is_charging();
+    status.sd_card_present = hardware.is_sd_card_ready();
+    
+    // Plugin status
+    status.running_plugins = plugins.get_running_plugins().size();
+    status.total_plugins = plugins.get_available_plugins().size();
+    
+    launcher.update_system_status(status);
+}
+
+void handle_mqtt_app_launch(const String& app_name, const String& parameters) {
+    Serial.printf("[SYSTEM] MQTT app launch request: %s\n", app_name.c_str());
+    
+    // Check if it's a system command
+    if (app_name == "settings") {
+        launcher.show_settings();
+        mqtt.send_app_launch_result(app_name, true, "Settings opened");
+        return;
+    }
+    
+    if (app_name == "system_info") {
+        launcher.show_system_info();
+        mqtt.send_app_launch_result(app_name, true, "System info opened");
+        return;
+    }
+    
+    if (app_name == "launcher") {
+        launcher.show();
+        mqtt.send_app_launch_result(app_name, true, "Launcher shown");
+        return;
+    }
+    
+    // Try to launch plugin
+    if (plugins.launch_plugin(app_name, parameters)) {
+        mqtt.send_app_launch_result(app_name, true, "Plugin launched successfully");
+        
+        // Hide launcher when app starts
+        launcher.hide();
+    } else {
+        String error_msg = "Plugin not found or failed to launch";
+        mqtt.send_app_launch_result(app_name, false, error_msg);
+        
+        // Show notification on launcher
+        NotificationMessage notification;
+        notification.title = "App Launch Failed";
+        notification.message = "Could not launch " + app_name;
+        notification.type = "error";
+        notification.timestamp = millis();
+        
+        launcher.show_notification(notification);
+    }
+}
+
+void handle_system_shutdown() {
+    Serial.println("[SYSTEM] Shutdown requested");
+    
+    // Show shutdown screen
+    if (hardware.is_display_ready()) {
+        boot.display_progress("Shutting down...", 0);
+    }
+    
+    // Stop all plugins
+    Serial.println("[SHUTDOWN] Stopping plugins...");
+    plugins.stop_all_plugins(true);
+    
+    // Disconnect services
+    Serial.println("[SHUTDOWN] Disconnecting services...");
+    mqtt.disconnect();
+    tailscale.disconnect();
+    WiFi.disconnect();
+    
+    // Save system state
+    Serial.println("[SHUTDOWN] Saving system state...");
+    // In real implementation, would save current state
+    
+    // Hardware cleanup
+    Serial.println("[SHUTDOWN] Hardware cleanup...");
+    hardware.shutdown();
+    
+    // Final shutdown message
+    Serial.println("[SHUTDOWN] System shutdown complete");
+    
+    // Enter deep sleep or restart
+    esp_deep_sleep_start();
+}
+
+void print_system_info() {
+    Serial.println("\n[INFO] System Information:");
+    Serial.printf("[INFO] Chip: %s Rev %d\n", ESP.getChipModel(), ESP.getChipRevision());
+    Serial.printf("[INFO] CPU Frequency: %d MHz\n", ESP.getCpuFreqMHz());
+    Serial.printf("[INFO] Flash Size: %d bytes\n", ESP.getFlashChipSize());
+    Serial.printf("[INFO] Free Heap: %d bytes\n", ESP.getFreeHeap());
+    Serial.printf("[INFO] Free PSRAM: %d bytes\n", ESP.getFreePsram());
+    Serial.printf("[INFO] SDK Version: %s\n", ESP.getSdkVersion());
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("[INFO] WiFi SSID: %s\n", WiFi.SSID().c_str());
+        Serial.printf("[INFO] WiFi IP: %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("[INFO] WiFi RSSI: %d dBm\n", WiFi.RSSI());
+    }
+    
+    Serial.printf("[INFO] Available Plugins: %d\n", plugins.get_available_plugins().size());
+    Serial.printf("[INFO] Running Plugins: %d\n", plugins.get_running_plugins().size());
+    Serial.println();
 }
 
 /**
