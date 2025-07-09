@@ -10,6 +10,8 @@
 #include "core/utils/logger.h"
 #include "lvgl.h"
 
+static const char* TAG = "DemoApp";
+
 // ===== DEMO UI ELEMENTS =====
 static lv_obj_t* main_screen = NULL;
 static lv_obj_t* status_label = NULL;
@@ -32,7 +34,7 @@ static void demo_timer_cb(lv_timer_t* timer);
  * @brief Initialize the demo application
  */
 void demo_app_init(void) {
-    LOG_INFO("Initializing E-ink Demo Application");
+    Logger::info(TAG, "Initializing E-ink Demo Application");
     
     // Create the main UI
     create_main_ui();
@@ -41,7 +43,7 @@ void demo_app_init(void) {
     lv_timer_t* demo_timer = lv_timer_create(demo_timer_cb, 5000, NULL);
     lv_timer_set_repeat_count(demo_timer, -1); // Repeat indefinitely
     
-    LOG_INFO("E-ink Demo Application initialized");
+    Logger::info(TAG, "E-ink Demo Application initialized");
 }
 
 /**
@@ -136,7 +138,7 @@ static void create_main_ui(void) {
     lv_obj_set_style_text_font(info_text, &lv_font_unscii_8, 0);
     lv_obj_align(info_text, LV_ALIGN_TOP_LEFT, 5, 25);
     
-    LOG_INFO("Main UI created successfully");
+    Logger::info(TAG, "Main UI created successfully");
 }
 
 /**
@@ -168,8 +170,10 @@ static void update_status_display(void) {
     battery_level = (battery_level > 20) ? battery_level - 1 : 100; // Simulate discharge/charge
     lv_bar_set_value(battery_bar, battery_level, LV_ANIM_OFF);
     
-    LOG_DEBUG("Status display updated - Demo: %s, Refreshes: %lu, Pixel Usage: %.1f%%", 
-              demo_running ? "Running" : "Stopped", refresh_count, pixel_usage);
+    Logger::debug(TAG, "Status display updated - Demo: %s, Refreshes: %lu, Pixel Usage: %.1f%%",
+                  demo_running ? "Running" : "Stopped",
+                  refresh_count,
+                  pixel_usage);
 }
 
 /**
@@ -185,10 +189,10 @@ static void demo_button_event_cb(lv_event_t* e) {
         if (demo_running) {
             lv_label_set_text(btn_label, "Stop Demo");
             demo_counter = 0;
-            LOG_INFO("Demo started");
+            Logger::info(TAG, "Demo started");
         } else {
             lv_label_set_text(btn_label, "Start Demo");
-            LOG_INFO("Demo stopped");
+            Logger::info(TAG, "Demo stopped");
         }
         
         update_status_display();
@@ -216,7 +220,7 @@ static void demo_timer_cb(lv_timer_t* timer) {
             
             // Remove it after a short delay to demonstrate partial refresh
             lv_timer_t* cleanup_timer = lv_timer_create([](lv_timer_t* t) {
-                lv_obj_t* obj = (lv_obj_t*)lv_timer_get_user_data(t);
+                lv_obj_t* obj = (lv_obj_t*)t->user_data;
                 if (obj) {
                     lv_obj_del(obj);
                 }
@@ -265,7 +269,7 @@ void demo_app_update_status(void) {
  * @brief Demonstrate different refresh modes
  */
 void demo_app_test_refresh_modes(void) {
-    LOG_INFO("Testing E-ink refresh modes");
+    Logger::info(TAG, "Testing E-ink refresh modes");
     
     // Create test pattern
     lv_obj_t* test_screen = lv_obj_create(NULL);
@@ -287,9 +291,9 @@ void demo_app_test_refresh_modes(void) {
     lv_timer_t* return_timer = lv_timer_create([](lv_timer_t* t) {
         lv_scr_load(main_screen);
         lv_timer_del(t);
-        LOG_INFO("Returned to main screen");
+        Logger::info(TAG, "Returned to main screen");
     }, 5000, NULL);
     lv_timer_set_repeat_count(return_timer, 1);
     
-    LOG_INFO("Test pattern displayed for 5 seconds");
+    Logger::info(TAG, "Test pattern displayed for 5 seconds");
 }

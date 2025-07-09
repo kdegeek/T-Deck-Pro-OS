@@ -16,13 +16,32 @@
 // Global instance
 EinkManager eink_manager;
 
-// Static callback wrappers
-static void eink_flush_wrapper(lv_disp_drv_t* disp_drv, const lv_area_t* area, lv_color_t* color_p) {
-    eink_manager.lvglFlushCallback(disp_drv, area, color_p);
+void EinkManager::lvglFlushCallback(lv_disp_drv_t* disp_drv, const lv_area_t* area, lv_color_t* color_p) {
+    // Convert LVGL color buffer to E-ink format
+    convertLvglToEink(color_p, current_buffer, area);
+    
+    // Update pixel usage tracking
+    updatePixelUsageMap(area);
+    
+    // Determine refresh strategy
+    EinkRefreshMode refresh_mode = EINK_REFRESH_PARTIAL;
+    
+    if (shouldPerformFullRefresh()) {
+        refresh_mode = EINK_REFRESH_FULL;
+        Logger::debug("EinkManager", "Performing full refresh to prevent burn-in");
+    }
+    
+    // Schedule the display update
+    scheduleUpdate(area, refresh_mode);
+    
+    // Mark flush as ready
+    lv_disp_flush_ready(disp_drv);
 }
 
-static void eink_render_start_wrapper(struct _lv_disp_drv_t* disp_drv) {
-    eink_manager.lvglRenderStartCallback(disp_drv);
+void EinkManager::lvglRenderStartCallback(struct _lv_disp_drv_t* disp_drv) {
+    // Called when LVGL starts rendering
+    // We can use this to batch updates or prepare for refresh
+    update_pending = true;
 }
 
 EinkManager::EinkManager() :
@@ -58,7 +77,7 @@ EinkManager::~EinkManager() {
 }
 
 bool EinkManager::initialize() {
-    LOG_INFO("Initializing E-ink Display Manager");
+    Logger::info("EinkManager", "Initializing E-ink Display Manager");
     
     // Initialize display hardware
     display = new GxEPD2_BW<GxEPD2_310_GDEQ031T10, GxEPD2_310_GDEQ031T10::HEIGHT>(
@@ -66,7 +85,7 @@ bool EinkManager::initialize() {
     );
     
     if (!display) {
-        LOG_ERROR("Failed to create display instance");
+        Logger::error("EinkManager", "Failed to create display instance");
         return false;
     }
     
@@ -77,7 +96,7 @@ bool EinkManager::initialize() {
     
     // Initialize buffers
     if (!initializeBuffers()) {
-        LOG_ERROR("Failed to initialize display buffers");
+        Logger::error("EinkManager", "Failed to initialize display buffers");
         return false;
     }
     
@@ -87,11 +106,11 @@ bool EinkManager::initialize() {
     // Perform initial clear to establish baseline
     performClearCycle();
     
-    LOG_INFO("E-ink Display Manager initialized successfully");
+    Logger::info("EinkManager", "E-ink Display Manager initialized successfully");
     return true;
 }
 
-void EinkManager::initializeBuffers() {
+bool EinkManager::initializeBuffers() {
     // Allocate display buffers
     current_buffer = (uint8_t*)ps_malloc(EINK_BUFFER_SIZE);
     previous_buffer = (uint8_t*)ps_malloc(EINK_BUFFER_SIZE);
@@ -102,7 +121,7 @@ void EinkManager::initializeBuffers() {
     lvgl_buf2 = (lv_color_t*)ps_malloc(sizeof(lv_color_t) * EINK_WIDTH * EINK_HEIGHT);
     
     if (!current_buffer || !previous_buffer || !diff_buffer || !lvgl_buf1 || !lvgl_buf2) {
-        LOG_ERROR("Failed to allocate display buffers");
+        Logger::error("EinkManager", "Failed to allocate display buffers");
         return false;
     }
     
@@ -115,7 +134,7 @@ void EinkManager::initializeBuffers() {
 }
 
 void EinkManager::configureLVGL() {
-    LOG_INFO("Configuring LVGL for E-ink display");
+    Logger::info("EinkManager", "Configuring LVGL for E-ink display");
     
     // Initialize LVGL draw buffer
     lv_disp_draw_buf_init(&lvgl_draw_buf, lvgl_buf1, lvgl_buf2, EINK_WIDTH * EINK_HEIGHT);
@@ -126,20 +145,21 @@ void EinkManager::configureLVGL() {
     lvgl_driver.ver_res = EINK_HEIGHT;
     lvgl_driver.flush_cb = eink_flush_wrapper;
     lvgl_driver.render_start_cb = eink_render_start_wrapper;
+    lvgl_driver.user_data = this;
     lvgl_driver.draw_buf = &lvgl_draw_buf;
     lvgl_driver.full_refresh = 0;  // We'll manage refresh strategy ourselves
     
     // Register the driver
     lv_disp_t* disp = lv_disp_drv_register(&lvgl_driver);
     if (!disp) {
-        LOG_ERROR("Failed to register LVGL display driver");
+        Logger::error("EinkManager", "Failed to register LVGL display driver");
         return;
     }
     
     // Set as default display
     lv_disp_set_default(disp);
     
-    LOG_INFO("LVGL configured for E-ink display");
+    Logger::info("EinkManager", "LVGL configured for E-ink display");
 }
 
 void EinkManager::lvglFlushCallback(lv_disp_drv_t* disp_drv, const lv_area_t* area, lv_color_t* color_p) {
@@ -154,7 +174,7 @@ void EinkManager::lvglFlushCallback(lv_disp_drv_t* disp_drv, const lv_area_t* ar
     
     if (shouldPerformFullRefresh()) {
         refresh_mode = EINK_REFRESH_FULL;
-        LOG_DEBUG("Performing full refresh to prevent burn-in");
+        Logger::debug("EinkManager", "Performing full refresh to prevent burn-in");
     }
     
     // Schedule the display update
@@ -208,19 +228,19 @@ bool EinkManager::shouldPerformFullRefresh() {
     
     // Check partial refresh count limit
     if (burn_in_data.partial_refresh_count >= partial_refresh_limit) {
-        LOG_DEBUG("Full refresh triggered by partial count limit");
+        Logger::debug("EinkManager", "Full refresh triggered by partial count limit");
         return true;
     }
     
     // Check time-based full refresh interval
     if (current_time - burn_in_data.last_full_refresh_time >= full_refresh_interval) {
-        LOG_DEBUG("Full refresh triggered by time interval");
+        Logger::debug("EinkManager", "Full refresh triggered by time interval");
         return true;
     }
     
     // Check if maintenance cycle is needed
     if (burn_in_data.needs_maintenance) {
-        LOG_DEBUG("Full refresh triggered by maintenance requirement");
+        Logger::debug("EinkManager", "Full refresh triggered by maintenance requirement");
         return true;
     }
     
@@ -259,7 +279,7 @@ void EinkManager::flushDisplay(const lv_area_t* area, const uint8_t* buffer, Ein
                 display->drawInvertedBitmap(area->x1, area->y1, buffer, w, h, GxEPD_BLACK);
             } while (display->nextPage());
             burn_in_data.partial_refresh_count++;
-            LOG_DEBUG("Partial refresh completed");
+            Logger::debug("EinkManager", "Partial refresh completed");
             break;
             
         case EINK_REFRESH_FULL:
@@ -271,7 +291,7 @@ void EinkManager::flushDisplay(const lv_area_t* area, const uint8_t* buffer, Ein
             burn_in_data.partial_refresh_count = 0;
             burn_in_data.last_full_refresh_time = esp_timer_get_time() / 1000;
             burn_in_data.needs_maintenance = false;
-            LOG_DEBUG("Full refresh completed");
+            Logger::debug("EinkManager", "Full refresh completed");
             break;
             
         case EINK_REFRESH_CLEAR:
@@ -287,7 +307,7 @@ void EinkManager::flushDisplay(const lv_area_t* area, const uint8_t* buffer, Ein
 }
 
 void EinkManager::performClearCycle() {
-    LOG_INFO("Performing E-ink clear cycle");
+    Logger::info("EinkManager", "Performing E-ink clear cycle");
     
     display->setFullWindow();
     
@@ -319,11 +339,11 @@ void EinkManager::performClearCycle() {
     memset(burn_in_data.pixel_usage_map, 0, sizeof(burn_in_data.pixel_usage_map));
     
     display->hibernate();
-    LOG_INFO("Clear cycle completed");
+    Logger::info("EinkManager", "Clear cycle completed");
 }
 
 void EinkManager::performDeepClean() {
-    LOG_INFO("Performing E-ink deep clean cycle");
+    Logger::info("EinkManager", "Performing E-ink deep clean cycle");
     
     // Perform multiple clear cycles for deep cleaning
     for (int i = 0; i < 3; i++) {
@@ -331,7 +351,7 @@ void EinkManager::performDeepClean() {
         delay(500);
     }
     
-    LOG_INFO("Deep clean cycle completed");
+    Logger::info("EinkManager", "Deep clean cycle completed");
 }
 
 void EinkManager::updatePixelUsageMap(const lv_area_t* area) {
@@ -355,14 +375,14 @@ void EinkManager::checkBurnInPrevention() {
     
     // Check if clear cycle is needed
     if (current_time - burn_in_data.last_clear_time >= clear_interval) {
-        LOG_INFO("Scheduling clear cycle for burn-in prevention");
+        Logger::info("EinkManager", "Scheduling clear cycle for burn-in prevention");
         performClearCycle();
     }
     
     // Check pixel usage patterns
     float usage_percentage = getPixelUsagePercentage();
     if (usage_percentage > 80.0f) {
-        LOG_WARN("High pixel usage detected, scheduling maintenance");
+        Logger::warning("EinkManager", "High pixel usage detected, scheduling maintenance");
         burn_in_data.needs_maintenance = true;
     }
 }
@@ -384,18 +404,18 @@ void EinkManager::enterSleepMode() {
     if (display) {
         display->hibernate();
     }
-    LOG_DEBUG("E-ink display entered sleep mode");
+    Logger::debug("EinkManager", "E-ink display entered sleep mode");
 }
 
 void EinkManager::exitSleepMode() {
     // Display will wake up automatically on next update
-    LOG_DEBUG("E-ink display exiting sleep mode");
+    Logger::debug("EinkManager", "E-ink display exiting sleep mode");
 }
 
 // Global initialization function
 void eink_init() {
     if (!eink_manager.initialize()) {
-        LOG_ERROR("Failed to initialize E-ink manager");
+        Logger::error("EinkManager", "Failed to initialize E-ink manager");
     }
 }
 

@@ -4,6 +4,9 @@
 #include <Arduino.h>
 #include <lvgl.h>
 #include <functional>
+#include <vector>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 /**
  * @brief Base class for all applications in the T-Deck-Pro OS
@@ -17,17 +20,17 @@ public:
         STOPPED,
         STARTING,
         RUNNING,
-        PAUSING,
-        PAUSED,
-        RESUMING,
+        PAUSING_APP,
+        PAUSED_APP,
+        RESUMING_APP,
         STOPPING
     };
 
     enum class AppPriority {
-        LOW = 1,
-        NORMAL = 2,
-        HIGH = 3,
-        CRITICAL = 4
+        LOW_PRIORITY = 1,
+        NORMAL_PRIORITY = 2,
+        HIGH_PRIORITY = 3,
+        CRITICAL_PRIORITY = 4
     };
 
     struct AppInfo {
@@ -53,8 +56,8 @@ public:
     // Lifecycle methods (pure virtual - must be implemented)
     virtual bool initialize() = 0;
     virtual bool start() = 0;
-    virtual bool pause() = 0;
-    virtual bool resume() = 0;
+    virtual bool pauseApp() = 0;
+    virtual bool resumeApp() = 0;
     virtual bool stop() = 0;
     virtual void cleanup() = 0;
 
@@ -76,7 +79,7 @@ public:
     uint32_t getRunTime() const { return millis() - startTime; }
     size_t getCurrentMemoryUsage() const;
     bool isRunning() const { return currentState == AppState::RUNNING; }
-    bool isPaused() const { return currentState == AppState::PAUSED; }
+    bool isPaused() const { return currentState == AppState::PAUSED_APP; }
     lv_obj_t* getMainContainer() const { return mainContainer; }
 
     // State management

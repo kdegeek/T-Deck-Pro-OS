@@ -72,8 +72,8 @@ public:
         return true;
     }
     
-    bool pause() override { return true; }
-    bool resume() override { return true; }
+    bool pauseApp() override { return true; }
+    bool resumeApp() override { return true; }
     bool stop() override { return true; }
     void cleanup() override {}
     
@@ -84,7 +84,7 @@ public:
             .description = "Test application for framework testing",
             .author = "Test Suite",
             .memoryUsage = 0,
-            .priority = AppPriority::NORMAL,
+            .priority = AppPriority::NORMAL_PRIORITY,
             .canRunInBackground = true,
             .requiresNetwork = false,
             .requiresSD = false,

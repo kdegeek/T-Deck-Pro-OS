@@ -74,8 +74,8 @@ public:
     // AppBase implementation
     bool initialize() override;
     bool start() override;
-    bool pause() override;
-    bool resume() override;
+    bool pauseApp() override;
+    bool resumeApp() override;
     bool stop() override;
     void cleanup() override;
 

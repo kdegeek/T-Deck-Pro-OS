@@ -82,7 +82,7 @@ private:
     lv_color_t* lvgl_buf2;
     
     // Private methods
-    void initializeBuffers();
+    bool initializeBuffers();
     void calculateDirtyRegions(const lv_area_t* area);
     bool shouldPerformFullRefresh();
     void performMaintenanceCycle();
@@ -106,8 +106,8 @@ public:
     void performDeepClean();
     
     // LVGL callbacks
-    static void lvglFlushCallback(lv_disp_drv_t* disp_drv, const lv_area_t* area, lv_color_t* color_p);
-    static void lvglRenderStartCallback(struct _lv_disp_drv_t* disp_drv);
+    void lvglFlushCallback(lv_disp_drv_t* disp_drv, const lv_area_t* area, lv_color_t* color_p);
+    void lvglRenderStartCallback(struct _lv_disp_drv_t* disp_drv);
     
     // Update management
     void scheduleUpdate(const lv_area_t* area, EinkRefreshMode mode = EINK_REFRESH_PARTIAL);

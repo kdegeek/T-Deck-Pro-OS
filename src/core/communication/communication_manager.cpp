@@ -14,299 +14,325 @@
 
 static const char* TAG = "CommMgr";
 
-// Static instance
-CommunicationManager* CommunicationManager::instance = nullptr;
+namespace TDeckOS {
+namespace Communication {
+
+// Singleton instance
+static CommunicationManager* s_instance = nullptr;
+
+CommunicationManager* CommunicationManager::getInstance() {
+    if (!s_instance) {
+        s_instance = new CommunicationManager();
+    }
+    return s_instance;
+}
 
 CommunicationManager::CommunicationManager() :
-    initialized(false),
-    activeInterface(COMM_INTERFACE_NONE),
-    preferredInterface(COMM_INTERFACE_WIFI),
-    autoFailover(true),
-    taskHandle(nullptr),
-    mutex(nullptr),
-    loraManager(nullptr),
-    wifiManager(nullptr),
-    cellularManager(nullptr)
+    m_initialized(false),
+    m_mutex(nullptr),
+    m_eventCallback(nullptr),
+    m_initTime(0),
+    m_lastInterfaceSwitch(0)
 {
     // Initialize statistics
-    memset(&stats, 0, sizeof(stats));
+    memset(&m_stats, 0, sizeof(m_stats));
     
     // Create mutex for thread safety
-    mutex = xSemaphoreCreateMutex();
-    if (!mutex) {
+    m_mutex = xSemaphoreCreateMutex();
+    if (!m_mutex) {
         ESP_LOGE(TAG, "Failed to create mutex");
     }
+    
+    m_initTime = millis();
 }
 
 CommunicationManager::~CommunicationManager() {
     deinitialize();
     
-    if (mutex) {
-        vSemaphoreDelete(mutex);
-        mutex = nullptr;
+    if (m_mutex) {
+        vSemaphoreDelete(m_mutex);
+        m_mutex = nullptr;
     }
 }
 
-CommunicationManager* CommunicationManager::getInstance() {
-    if (!instance) {
-        instance = new CommunicationManager();
-    }
-    return instance;
-}
-
-bool CommunicationManager::initialize() {
-    if (initialized) {
+bool CommunicationManager::initialize(const NetworkConfig& config) {
+    if (m_initialized) {
         ESP_LOGW(TAG, "Already initialized");
         return true;
     }
     
     ESP_LOGI(TAG, "Initializing communication manager");
     
-    // Initialize individual managers
-    loraManager = LoRaManager::getInstance();
-    wifiManager = WiFiManager::getInstance();
-    cellularManager = CellularManager::getInstance();
+    // Store configuration
+    m_config = config;
     
-    if (!loraManager || !wifiManager || !cellularManager) {
-        ESP_LOGE(TAG, "Failed to get manager instances");
-        return false;
+    // Initialize individual managers based on configuration
+    bool success = true;
+    
+    if (m_config.enableLoRa) {
+        if (!m_loraManager.initialize(m_config.loraConfig)) {
+            ESP_LOGW(TAG, "LoRa initialization failed");
+            success = false;
+        }
     }
     
-    // Initialize all communication interfaces
-    bool loraOk = loraManager->initialize();
-    bool wifiOk = wifiManager->initialize();
-    bool cellularOk = cellularManager->initialize();
-    
-    if (!loraOk) {
-        ESP_LOGW(TAG, "LoRa initialization failed");
-    }
-    if (!wifiOk) {
-        ESP_LOGW(TAG, "WiFi initialization failed");
-    }
-    if (!cellularOk) {
-        ESP_LOGW(TAG, "Cellular initialization failed");
+    if (m_config.enableWiFi) {
+        if (!m_wifiManager.initialize()) {
+            ESP_LOGW(TAG, "WiFi initialization failed");
+            success = false;
+        }
     }
     
-    // At least one interface must work
-    if (!loraOk && !wifiOk && !cellularOk) {
-        ESP_LOGE(TAG, "All communication interfaces failed to initialize");
-        return false;
+    if (m_config.enableCellular) {
+        if (!m_cellularManager.initialize(m_config.cellularConfig)) {
+            ESP_LOGW(TAG, "Cellular initialization failed");
+            success = false;
+        }
     }
     
-    // Create communication manager task
-    BaseType_t result = xTaskCreate(
-        communicationTask,
-        "comm_mgr",
-        4096,
-        this,
-        SYSTEM_TASK_PRIORITY,
-        &taskHandle
-    );
-    
-    if (result != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create communication task");
-        return false;
+    if (!success) {
+        ESP_LOGE(TAG, "Some communication interfaces failed to initialize");
+        // Continue anyway - partial functionality is better than none
     }
     
-    initialized = true;
+    m_initialized = true;
     ESP_LOGI(TAG, "Communication manager initialized successfully");
-    
-    // Select initial interface
-    selectBestInterface();
     
     return true;
 }
 
 void CommunicationManager::deinitialize() {
-    if (!initialized) {
+    if (!m_initialized) {
         return;
     }
     
     ESP_LOGI(TAG, "Deinitializing communication manager");
     
-    // Stop task
-    if (taskHandle) {
-        vTaskDelete(taskHandle);
-        taskHandle = nullptr;
-    }
-    
     // Deinitialize all managers
-    if (loraManager) {
-        loraManager->deinitialize();
-    }
-    if (wifiManager) {
-        wifiManager->deinitialize();
-    }
-    if (cellularManager) {
-        cellularManager->deinitialize();
-    }
+    m_loraManager.deinitialize();
+    m_wifiManager.deinitialize();
+    m_cellularManager.deinitialize();
     
-    activeInterface = COMM_INTERFACE_NONE;
-    initialized = false;
+    m_initialized = false;
     
     ESP_LOGI(TAG, "Communication manager deinitialized");
 }
 
-bool CommunicationManager::sendMessage(const uint8_t* data, size_t length, comm_interface_t interface) {
-    if (!initialized) {
+bool CommunicationManager::startAllInterfaces() {
+    if (!m_initialized) {
         ESP_LOGE(TAG, "Not initialized");
         return false;
     }
     
-    if (!data || length == 0) {
-        ESP_LOGE(TAG, "Invalid data parameters");
-        return false;
+    bool success = true;
+    
+    
+    
+    
+    return success;
+}
+
+void CommunicationManager::stopAllInterfaces() {
+    if (!m_initialized) {
+        return;
     }
     
-    // Use specified interface or active interface
-    comm_interface_t targetInterface = (interface == COMM_INTERFACE_AUTO) ? activeInterface : interface;
     
-    if (targetInterface == COMM_INTERFACE_NONE) {
-        ESP_LOGE(TAG, "No active interface available");
+    ESP_LOGI(TAG, "All interfaces stopped");
+}
+
+CommStatus CommunicationManager::getStatus() const {
+    CommStatus status;
+    
+    status.loraAvailable = m_loraManager.isInitialized();
+    status.wifiAvailable = m_wifiManager.isConnected();
+    status.cellularAvailable = m_cellularManager.isConnected();
+    status.bluetoothAvailable = false; // Not implemented yet
+    
+    status.loraMode = m_loraManager.getMode();
+    status.wifiStatus = m_wifiManager.getStatus();
+    status.cellularStatus = m_cellularManager.getStatus();
+    
+    // Build active interfaces string
+    String interfaces = "";
+    if (status.loraAvailable) interfaces += "LoRa ";
+    if (status.wifiAvailable) interfaces += "WiFi ";
+    if (status.cellularAvailable) interfaces += "Cellular ";
+    status.activeInterfaces = interfaces;
+    
+    return status;
+}
+
+bool CommunicationManager::isConnected() const {
+    return m_wifiManager.isConnected() || 
+           m_cellularManager.isConnected() || 
+           m_loraManager.isInitialized();
+}
+
+CommInterface CommunicationManager::getBestInterface() const {
+    // Priority: WiFi -> Cellular -> LoRa
+    if (m_wifiManager.isConnected()) {
+        return CommInterface::WIFI;
+    } else if (m_cellularManager.isConnected()) {
+        return CommInterface::CELLULAR;
+    } else if (m_loraManager.isInitialized()) {
+        return CommInterface::LORA;
+    }
+    
+    return CommInterface::LORA; // Default fallback
+}
+
+bool CommunicationManager::sendData(const uint8_t* data, size_t length, CommInterface interface) {
+    if (!m_initialized || !data || length == 0) {
         return false;
     }
     
     bool success = false;
     
     // Take mutex for thread safety
-    if (xSemaphoreTake(mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
-        switch (targetInterface) {
-            case COMM_INTERFACE_LORA:
-                if (loraManager && loraManager->isInitialized()) {
-                    success = loraManager->transmit(data, length);
+    if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        switch (interface) {
+            case CommInterface::LORA:
+                if (m_loraManager.isInitialized()) {
+                    success = m_loraManager.transmit(data, length);
                     if (success) {
-                        stats.lora.messagesSent++;
-                        stats.lora.bytesSent += length;
-                    } else {
-                        stats.lora.sendErrors++;
+                        m_stats.loraStats.packetsTransmitted++;
                     }
                 }
                 break;
                 
-            case COMM_INTERFACE_WIFI:
-                // WiFi sending would typically go through a protocol like TCP/UDP
-                // For now, we'll mark as successful if WiFi is connected
-                if (wifiManager && wifiManager->isConnected()) {
-                    success = true; // Placeholder - implement actual WiFi sending
-                    stats.wifi.messagesSent++;
-                    stats.wifi.bytesSent += length;
-                } else {
-                    stats.wifi.sendErrors++;
+            case CommInterface::WIFI:
+                if (m_wifiManager.isConnected()) {
+                    // Placeholder - implement actual WiFi data sending
+                    success = true;
+                    m_stats.wifiStats.bytesTransmitted += length;
                 }
                 break;
                 
-            case COMM_INTERFACE_CELLULAR:
-                // Cellular sending would typically go through SMS or data connection
-                if (cellularManager && cellularManager->isConnected()) {
-                    success = true; // Placeholder - implement actual cellular sending
-                    stats.cellular.messagesSent++;
-                    stats.cellular.bytesSent += length;
-                } else {
-                    stats.cellular.sendErrors++;
+            case CommInterface::CELLULAR:
+                if (m_cellularManager.isConnected()) {
+                    // Placeholder - implement actual cellular data sending
+                    success = true;
+                    m_stats.cellularStats.dataBytesSent += length;
                 }
                 break;
                 
             default:
-                ESP_LOGE(TAG, "Invalid interface: %d", targetInterface);
+                ESP_LOGE(TAG, "Invalid interface");
                 break;
         }
         
-        xSemaphoreGive(mutex);
-    } else {
-        ESP_LOGE(TAG, "Failed to take mutex");
-    }
-    
-    // Handle failover if enabled and send failed
-    if (!success && autoFailover && interface == COMM_INTERFACE_AUTO) {
-        ESP_LOGW(TAG, "Send failed on interface %d, attempting failover", targetInterface);
-        success = attemptFailover(data, length);
+        if (success) {
+            m_stats.totalBytesTransmitted += length;
+        }
+        
+        xSemaphoreGive(m_mutex);
     }
     
     return success;
 }
 
-bool CommunicationManager::receiveMessage(uint8_t* buffer, size_t bufferSize, size_t* receivedLength, comm_interface_t* sourceInterface) {
-    if (!initialized || !buffer || bufferSize == 0) {
+bool CommunicationManager::sendMessage(const String& message, CommInterface interface) {
+    return sendData((const uint8_t*)message.c_str(), message.length(), interface);
+}
+
+bool CommunicationManager::broadcastMesh(const String& message) {
+    return sendMessage(message, CommInterface::LORA);
+}
+
+bool CommunicationManager::connectWiFi(const String& ssid, const String& password) {
+    if (!m_initialized) {
         return false;
     }
     
-    bool messageReceived = false;
-    
-    // Take mutex for thread safety
-    if (xSemaphoreTake(mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        // Check LoRa for messages
-        if (loraManager && loraManager->isInitialized()) {
-            if (loraManager->receive(buffer, bufferSize, receivedLength)) {
-                messageReceived = true;
-                if (sourceInterface) *sourceInterface = COMM_INTERFACE_LORA;
-                stats.lora.messagesReceived++;
-                stats.lora.bytesReceived += *receivedLength;
-            }
-        }
-        
-        // Check WiFi for messages (placeholder)
-        if (!messageReceived && wifiManager && wifiManager->isConnected()) {
-            // Placeholder for WiFi message reception
-            // Would typically check TCP/UDP sockets or other protocols
-        }
-        
-        // Check Cellular for messages (placeholder)
-        if (!messageReceived && cellularManager && cellularManager->isConnected()) {
-            // Placeholder for cellular message reception
-            // Would typically check SMS or data connection
-        }
-        
-        xSemaphoreGive(mutex);
-    }
-    
-    return messageReceived;
+    WiFiStationConfig wifiConfig;
+    wifiConfig.ssid = ssid;
+    wifiConfig.password = password;
+    return m_wifiManager.connect(wifiConfig);
 }
 
-bool CommunicationManager::isInterfaceAvailable(comm_interface_t interface) {
-    if (!initialized) {
+bool CommunicationManager::startWiFiAP(const String& ssid, const String& password) {
+    if (!m_initialized) {
         return false;
     }
     
-    switch (interface) {
-        case COMM_INTERFACE_LORA:
-            return loraManager && loraManager->isInitialized();
-            
-        case COMM_INTERFACE_WIFI:
-            return wifiManager && wifiManager->isConnected();
-            
-        case COMM_INTERFACE_CELLULAR:
-            return cellularManager && cellularManager->isConnected();
-            
-        default:
-            return false;
+    WiFiAPConfig apConfig;
+    apConfig.ssid = ssid;
+    apConfig.password = password;
+    return m_wifiManager.startAP(apConfig);
+}
+
+bool CommunicationManager::connectCellular(const String& apn, const String& username, const String& password) {
+    if (!m_initialized) {
+        return false;
     }
-}
-
-comm_interface_t CommunicationManager::getActiveInterface() {
-    return activeInterface;
-}
-
-void CommunicationManager::setPreferredInterface(comm_interface_t interface) {
-    preferredInterface = interface;
     
-    // If the preferred interface is available, switch to it
-    if (isInterfaceAvailable(interface)) {
-        activeInterface = interface;
-        ESP_LOGI(TAG, "Switched to preferred interface: %d", interface);
+    m_config.cellularConfig.apnConfig.apn = apn;
+    m_config.cellularConfig.apnConfig.username = username;
+    m_config.cellularConfig.apnConfig.password = password;
+    return m_cellularManager.connect();
+}
+
+bool CommunicationManager::scanWiFi(WiFiScanCallback callback) {
+    if (!m_initialized) {
+        return false;
     }
-}
-
-void CommunicationManager::setAutoFailover(bool enabled) {
-    autoFailover = enabled;
-    ESP_LOGI(TAG, "Auto failover %s", enabled ? "enabled" : "disabled");
-}
-
-comm_stats_t CommunicationManager::getStatistics() {
-    comm_stats_t statsCopy;
     
-    if (xSemaphoreTake(mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        statsCopy = stats;
-        xSemaphoreGive(mutex);
+    return m_wifiManager.scanNetworks(callback);
+}
+
+bool CommunicationManager::sendSMS(const String& number, const String& message) {
+    if (!m_initialized) {
+        return false;
+    }
+    
+    return m_cellularManager.sendSMS(number, message);
+}
+
+bool CommunicationManager::setLoRaMode(LoRaMode mode) {
+    if (!m_initialized) {
+        return false;
+    }
+    
+    return m_loraManager.setMode(mode);
+}
+
+bool CommunicationManager::startLoRaReceive(LoRaReceiveCallback callback) {
+    if (!m_initialized) {
+        return false;
+    }
+    
+    return m_loraManager.startReceive(callback);
+}
+
+bool CommunicationManager::updateConfig(const NetworkConfig& config) {
+    m_config = config;
+    
+    // Apply configuration changes
+    bool success = true;
+    
+    if (!enableInterface(CommInterface::LORA, config.enableLoRa)) {
+        success = false;
+    }
+    
+    if (!enableInterface(CommInterface::WIFI, config.enableWiFi)) {
+        success = false;
+    }
+    
+    if (!enableInterface(CommInterface::CELLULAR, config.enableCellular)) {
+        success = false;
+    }
+    
+    return success;
+}
+
+CommStats CommunicationManager::getStats() const {
+    CommStats statsCopy;
+    
+    if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        statsCopy = m_stats;
+        statsCopy.uptime = millis() - m_initTime;
+        xSemaphoreGive(m_mutex);
     } else {
         memset(&statsCopy, 0, sizeof(statsCopy));
     }
@@ -314,76 +340,192 @@ comm_stats_t CommunicationManager::getStatistics() {
     return statsCopy;
 }
 
-void CommunicationManager::resetStatistics() {
-    if (xSemaphoreTake(mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
-        memset(&stats, 0, sizeof(stats));
-        xSemaphoreGive(mutex);
+void CommunicationManager::resetStats() {
+    if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        memset(&m_stats, 0, sizeof(m_stats));
+        xSemaphoreGive(m_mutex);
         ESP_LOGI(TAG, "Statistics reset");
     }
 }
 
-void CommunicationManager::selectBestInterface() {
-    comm_interface_t bestInterface = COMM_INTERFACE_NONE;
-    
-    // Priority order: Preferred -> WiFi -> Cellular -> LoRa
-    if (isInterfaceAvailable(preferredInterface)) {
-        bestInterface = preferredInterface;
-    } else if (isInterfaceAvailable(COMM_INTERFACE_WIFI)) {
-        bestInterface = COMM_INTERFACE_WIFI;
-    } else if (isInterfaceAvailable(COMM_INTERFACE_CELLULAR)) {
-        bestInterface = COMM_INTERFACE_CELLULAR;
-    } else if (isInterfaceAvailable(COMM_INTERFACE_LORA)) {
-        bestInterface = COMM_INTERFACE_LORA;
+void CommunicationManager::process() {
+    if (!m_initialized) {
+        return;
     }
     
-    if (bestInterface != activeInterface) {
-        activeInterface = bestInterface;
-        ESP_LOGI(TAG, "Selected interface: %d", activeInterface);
-    }
+    // Process each manager
+    m_loraManager.process();
+    m_wifiManager.process();
+    m_cellularManager.process();
+    
+    // Update statistics
+    updateStats();
 }
 
-bool CommunicationManager::attemptFailover(const uint8_t* data, size_t length) {
-    // Try interfaces in priority order, excluding the current active interface
-    comm_interface_t interfaces[] = {COMM_INTERFACE_WIFI, COMM_INTERFACE_CELLULAR, COMM_INTERFACE_LORA};
+bool CommunicationManager::enableInterface(CommInterface interface, bool enable) {
+    if (!m_initialized) {
+        return false;
+    }
     
-    for (int i = 0; i < 3; i++) {
-        if (interfaces[i] != activeInterface && isInterfaceAvailable(interfaces[i])) {
-            ESP_LOGI(TAG, "Attempting failover to interface %d", interfaces[i]);
+    bool success = true;
+    
+    switch (interface) {
+        case CommInterface::LORA:
+            m_config.enableLoRa = enable;
+            break;
             
-            if (sendMessage(data, length, interfaces[i])) {
-                // Update active interface to the working one
-                activeInterface = interfaces[i];
-                ESP_LOGI(TAG, "Failover successful to interface %d", activeInterface);
-                return true;
-            }
-        }
+        case CommInterface::WIFI:
+            m_config.enableWiFi = enable;
+            break;
+            
+        case CommInterface::CELLULAR:
+            m_config.enableCellular = enable;
+            break;
+            
+        default:
+            success = false;
+            break;
     }
     
-    ESP_LOGE(TAG, "All failover attempts failed");
-    return false;
+    return success;
 }
 
-void CommunicationManager::communicationTask(void* parameter) {
-    CommunicationManager* manager = static_cast<CommunicationManager*>(parameter);
-    
-    ESP_LOGI(TAG, "Communication task started");
-    
-    TickType_t lastInterfaceCheck = 0;
-    const TickType_t interfaceCheckInterval = pdMS_TO_TICKS(5000); // Check every 5 seconds
-    
-    while (true) {
-        TickType_t currentTime = xTaskGetTickCount();
-        
-        // Periodically check interface availability and select best one
-        if (currentTime - lastInterfaceCheck >= interfaceCheckInterval) {
-            manager->selectBestInterface();
-            lastInterfaceCheck = currentTime;
-        }
-        
-        // Handle any pending communication tasks
-        // This could include processing queued messages, handling callbacks, etc.
-        
-        // Sleep for a short time to prevent busy waiting
-        vTaskDelay(pdMS_TO_TICKS(100));
+bool CommunicationManager::isInterfaceEnabled(CommInterface interface) const {
+    switch (interface) {
+        case CommInterface::LORA:
+            return m_config.enableLoRa;
+        case CommInterface::WIFI:
+            return m_config.enableWiFi;
+        case CommInterface::CELLULAR:
+            return m_config.enableCellular;
+        default:
+            return false;
     }
 }
+
+int16_t CommunicationManager::getSignalStrength(CommInterface interface) const {
+    switch (interface) {
+        case CommInterface::LORA:
+            return m_loraManager.getLastRssi();
+        case CommInterface::WIFI:
+            return m_wifiManager.getRSSI();
+        case CommInterface::CELLULAR:
+            return const_cast<CellularManager&>(m_cellularManager).getSignalStrength();
+        default:
+            return -999; // Invalid
+    }
+}
+
+void CommunicationManager::handleLoRaEvent(bool success, int errorCode) {
+    if (m_eventCallback) {
+        String event = success ? "success" : "error";
+        String data = String(errorCode);
+        m_eventCallback(CommInterface::LORA, event, data);
+    }
+}
+
+void CommunicationManager::handleWiFiEvent(WiFiStatus status, const String& info) {
+    if (m_eventCallback) {
+        String event = "status_change";
+        m_eventCallback(CommInterface::WIFI, event, info);
+    }
+}
+
+void CommunicationManager::handleCellularEvent(CellularStatus status, const String& info) {
+    if (m_eventCallback) {
+        String event = "status_change";
+        m_eventCallback(CommInterface::CELLULAR, event, info);
+    }
+}
+
+void CommunicationManager::updateStats() {
+    // Update interface switch count
+    static CommInterface lastBestInterface = CommInterface::LORA;
+    CommInterface currentBest = getBestInterface();
+    
+    if (currentBest != lastBestInterface) {
+        m_stats.interfaceSwitches++;
+        m_lastInterfaceSwitch = millis();
+        lastBestInterface = currentBest;
+    }
+    
+    // Get stats from individual managers
+    m_stats.loraStats = m_loraManager.getStats();
+    m_stats.wifiStats = m_wifiManager.getStats();
+    m_stats.cellularStats = m_cellularManager.getStats();
+    
+    // Calculate totals
+    m_stats.totalBytesTransmitted = m_stats.loraStats.packetsTransmitted +
+                                   m_stats.wifiStats.bytesTransmitted +
+                                   m_stats.cellularStats.dataBytesSent;
+                                   
+    m_stats.totalBytesReceived = m_stats.loraStats.packetsReceived +
+                                 m_stats.wifiStats.bytesReceived +
+                                 m_stats.cellularStats.dataBytesReceived;
+}
+
+bool CommunicationManager::initializeInterface(CommInterface interface) {
+    switch (interface) {
+        case CommInterface::LORA:
+            return m_loraManager.initialize(m_config.loraConfig);
+        case CommInterface::WIFI:
+            return m_wifiManager.initialize();
+        case CommInterface::CELLULAR:
+            return m_cellularManager.initialize(m_config.cellularConfig);
+        default:
+            return false;
+    }
+}
+
+void CommunicationManager::deinitializeInterface(CommInterface interface) {
+    switch (interface) {
+        case CommInterface::LORA:
+            m_loraManager.deinitialize();
+            break;
+        case CommInterface::WIFI:
+            m_wifiManager.deinitialize();
+            break;
+        case CommInterface::CELLULAR:
+            m_cellularManager.deinitialize();
+            break;
+        default:
+            break;
+    }
+}
+
+CommInterface CommunicationManager::selectBestInterface() const {
+    // Priority based on configuration
+    if (m_wifiManager.isConnected() && m_config.enableWiFi) {
+        return CommInterface::WIFI;
+    } else if (m_cellularManager.isConnected() && m_config.enableCellular) {
+        return CommInterface::CELLULAR;
+    } else if (m_loraManager.isInitialized() && m_config.enableLoRa) {
+        return CommInterface::LORA;
+    }
+    
+    return CommInterface::LORA; // Default fallback
+}
+
+bool CommunicationManager::isWiFiConnected() const {
+    return m_wifiManager.isConnected();
+}
+
+bool CommunicationManager::isCellularConnected() const {
+    return m_cellularManager.isConnected();
+}
+
+bool CommunicationManager::isLoRaActive() const {
+    return m_loraManager.isInitialized();
+}
+
+void CommunicationManager::setPreferredInterface(CommInterface interface) {
+    m_config.primaryInterface = interface;
+}
+
+void CommunicationManager::setAutoFailover(bool enable) {
+    // Store auto failover setting in config
+    // This could be added to NetworkConfig if needed
+}
+
+} // namespace Communication
+} // namespace TDeckOS

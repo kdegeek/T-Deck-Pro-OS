@@ -6,6 +6,7 @@
  */
 
 #include "wifi_manager.h"
+#include "core/hal/board_config.h"
 #include <Arduino.h>
 
 namespace TDeckOS {
@@ -38,25 +39,25 @@ WiFiManager::~WiFiManager() {
 
 bool WiFiManager::initialize() {
     if (m_initialized) {
-        LOG_WARN("WiFi", "Already initialized");
+        Logger::warning("WiFi", "Already initialized");
         return true;
     }
 
-    LOG_INFO("WiFi", "Initializing WiFi manager...");
+    Logger::info("WiFi", "Initializing WiFi manager...");
     
     m_initTime = millis();
     
     // Create mutex
     m_mutex = xSemaphoreCreateMutex();
     if (!m_mutex) {
-        LOG_ERROR("WiFi", "Failed to create mutex");
+        Logger::error("WiFi", "Failed to create mutex");
         return false;
     }
     
     // Create event queue
     m_eventQueue = xQueueCreate(20, sizeof(WiFiEvent_t));
     if (!m_eventQueue) {
-        LOG_ERROR("WiFi", "Failed to create event queue");
+        Logger::error("WiFi", "Failed to create event queue");
         vSemaphoreDelete(m_mutex);
         return false;
     }
@@ -75,7 +76,7 @@ bool WiFiManager::initialize() {
     );
     
     if (result != pdPASS) {
-        LOG_ERROR("WiFi", "Failed to create WiFi task");
+        Logger::error("WiFi", "Failed to create WiFi task");
         vQueueDelete(m_eventQueue);
         vSemaphoreDelete(m_mutex);
         return false;
@@ -88,7 +89,7 @@ bool WiFiManager::initialize() {
     // Reset statistics
     resetStats();
     
-    LOG_INFO("WiFi", "WiFi manager initialized successfully");
+    Logger::info("WiFi", "WiFi manager initialized successfully");
     return true;
 }
 
@@ -97,7 +98,7 @@ void WiFiManager::deinitialize() {
         return;
     }
     
-    LOG_INFO("WiFi", "Deinitializing WiFi manager...");
+    Logger::info("WiFi", "Deinitializing WiFi manager...");
     
     // Stop task
     if (m_taskHandle) {
@@ -124,17 +125,17 @@ void WiFiManager::deinitialize() {
     m_currentMode = WiFiMode::OFF;
     m_status = WiFiStatus::DISCONNECTED;
     
-    LOG_INFO("WiFi", "WiFi manager deinitialized");
+    Logger::info("WiFi", "WiFi manager deinitialized");
 }
 
 bool WiFiManager::setMode(WiFiMode mode) {
     if (!m_initialized) {
-        LOG_ERROR("WiFi", "Not initialized");
+        Logger::error("WiFi", "Not initialized");
         return false;
     }
     
     if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
-        LOG_ERROR("WiFi", "Failed to acquire mutex");
+        Logger::error("WiFi", "Failed to acquire mutex");
         return false;
     }
     
@@ -165,7 +166,7 @@ bool WiFiManager::setMode(WiFiMode mode) {
     
     if (success) {
         m_currentMode = mode;
-        LOG_DEBUG("WiFi", "Mode changed to %d", static_cast<int>(mode));
+        Logger::debug("WiFi", "Mode changed to " + String(static_cast<int>(mode)));
     }
     
     xSemaphoreGive(m_mutex);
@@ -174,17 +175,17 @@ bool WiFiManager::setMode(WiFiMode mode) {
 
 bool WiFiManager::connect(const WiFiStationConfig& config, WiFiEventCallback callback) {
     if (!m_initialized) {
-        LOG_ERROR("WiFi", "Not initialized");
+        Logger::error("WiFi", "Not initialized");
         return false;
     }
     
     if (config.ssid.isEmpty()) {
-        LOG_ERROR("WiFi", "SSID cannot be empty");
+        Logger::error("WiFi", "SSID cannot be empty");
         return false;
     }
     
     if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
-        LOG_ERROR("WiFi", "Failed to acquire mutex");
+        Logger::error("WiFi", "Failed to acquire mutex");
         return false;
     }
     
@@ -208,7 +209,7 @@ bool WiFiManager::connect(const WiFiStationConfig& config, WiFiEventCallback cal
     m_lastConnectAttempt = millis();
     m_stats.connectAttempts++;
     
-    LOG_INFO("WiFi", "Connecting to '%s'...", config.ssid.c_str());
+    Logger::info("WiFi", "Connecting to '" + config.ssid + "'...");
     
     if (config.password.isEmpty()) {
         WiFi.begin(config.ssid.c_str());
@@ -222,7 +223,7 @@ bool WiFiManager::connect(const WiFiStationConfig& config, WiFiEventCallback cal
 
 void WiFiManager::disconnect() {
     if (m_initialized) {
-        LOG_INFO("WiFi", "Disconnecting from WiFi...");
+        Logger::info("WiFi", "Disconnecting from WiFi...");
         WiFi.disconnect();
         m_status = WiFiStatus::DISCONNECTED;
     }
@@ -230,17 +231,17 @@ void WiFiManager::disconnect() {
 
 bool WiFiManager::startAP(const WiFiAPConfig& config) {
     if (!m_initialized) {
-        LOG_ERROR("WiFi", "Not initialized");
+        Logger::error("WiFi", "Not initialized");
         return false;
     }
     
     if (config.ssid.isEmpty()) {
-        LOG_ERROR("WiFi", "AP SSID cannot be empty");
+        Logger::error("WiFi", "AP SSID cannot be empty");
         return false;
     }
     
     if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
-        LOG_ERROR("WiFi", "Failed to acquire mutex");
+        Logger::error("WiFi", "Failed to acquire mutex");
         return false;
     }
     
@@ -255,8 +256,8 @@ bool WiFiManager::startAP(const WiFiAPConfig& config) {
     bool success = configureAP();
     
     if (success) {
-        LOG_INFO("WiFi", "Access Point '%s' started", config.ssid.c_str());
-        LOG_INFO("WiFi", "IP address: %s", config.ip.toString().c_str());
+        Logger::info("WiFi", "Access Point '" + config.ssid + "' started");
+        Logger::info("WiFi", "IP address: " + config.ip.toString());
     }
     
     xSemaphoreGive(m_mutex);
@@ -265,21 +266,21 @@ bool WiFiManager::startAP(const WiFiAPConfig& config) {
 
 void WiFiManager::stopAP() {
     if (m_initialized) {
-        LOG_INFO("WiFi", "Stopping Access Point...");
+        Logger::info("WiFi", "Stopping Access Point...");
         WiFi.softAPdisconnect(true);
     }
 }
 
 bool WiFiManager::scanNetworks(WiFiScanCallback callback, bool async) {
     if (!m_initialized) {
-        LOG_ERROR("WiFi", "Not initialized");
+        Logger::error("WiFi", "Not initialized");
         return false;
     }
     
     m_scanCallback = callback;
     m_stats.scanCount++;
     
-    LOG_INFO("WiFi", "Starting WiFi scan...");
+    Logger::info("WiFi", "Starting WiFi scan...");
     
     if (async) {
         return WiFi.scanNetworks(true) != WIFI_SCAN_FAILED;
@@ -387,7 +388,7 @@ void WiFiManager::resetStats() {
         m_stats = WiFiStats{};
         m_initTime = millis();
         xSemaphoreGive(m_mutex);
-        LOG_INFO("WiFi", "Statistics reset");
+        Logger::info("WiFi", "Statistics reset");
     }
 }
 
@@ -400,7 +401,7 @@ void WiFiManager::wifiTask(void* parameter) {
     WiFiManager* manager = static_cast<WiFiManager*>(parameter);
     WiFiEvent_t event;
     
-    LOG_INFO("WiFi", "WiFi task started");
+    Logger::info("WiFi", "WiFi task started");
     
     while (true) {
         if (xQueueReceive(manager->m_eventQueue, &event, pdMS_TO_TICKS(1000)) == pdTRUE) {
@@ -428,11 +429,11 @@ void WiFiManager::wifiEventHandler(WiFiEvent_t event) {
 void WiFiManager::handleWiFiEvent(WiFiEvent_t event) {
     switch (event) {
         case ARDUINO_EVENT_WIFI_STA_START:
-            LOG_DEBUG("WiFi", "Station started");
+            Logger::debug("WiFi", "Station started");
             break;
             
         case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-            LOG_INFO("WiFi", "Connected to WiFi");
+            Logger::info("WiFi", "Connected to WiFi");
             m_status = WiFiStatus::CONNECTED;
             m_stats.successfulConnections++;
             m_retryCount = 0;
@@ -442,11 +443,11 @@ void WiFiManager::handleWiFiEvent(WiFiEvent_t event) {
             break;
             
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-            LOG_INFO("WiFi", "Got IP address: %s", WiFi.localIP().toString().c_str());
+            Logger::info("WiFi", "Got IP address: " + WiFi.localIP().toString());
             break;
             
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-            LOG_WARN("WiFi", "Disconnected from WiFi");
+            Logger::warning("WiFi", "Disconnected from WiFi");
             if (m_status == WiFiStatus::CONNECTED) {
                 m_stats.disconnections++;
                 m_status = WiFiStatus::LOST_CONNECTION;
@@ -459,19 +460,19 @@ void WiFiManager::handleWiFiEvent(WiFiEvent_t event) {
             break;
             
         case ARDUINO_EVENT_WIFI_AP_START:
-            LOG_INFO("WiFi", "Access Point started");
+            Logger::info("WiFi", "Access Point started");
             break;
             
         case ARDUINO_EVENT_WIFI_AP_STACONNECTED:
-            LOG_INFO("WiFi", "Client connected to AP");
+            Logger::info("WiFi", "Client connected to AP");
             break;
             
         case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED:
-            LOG_INFO("WiFi", "Client disconnected from AP");
+            Logger::info("WiFi", "Client disconnected from AP");
             break;
             
         case ARDUINO_EVENT_WIFI_SCAN_DONE:
-            LOG_DEBUG("WiFi", "Scan completed");
+            Logger::debug("WiFi", "Scan completed");
             if (m_scanCallback) {
                 int n = WiFi.scanComplete();
                 if (n >= 0) {
@@ -524,7 +525,7 @@ bool WiFiManager::configureStation() {
     if (!m_stationConfig.useDHCP) {
         if (!WiFi.config(m_stationConfig.staticIP, m_stationConfig.gateway, 
                         m_stationConfig.subnet, m_stationConfig.dns1, m_stationConfig.dns2)) {
-            LOG_ERROR("WiFi", "Failed to configure static IP");
+            Logger::error("WiFi", "Failed to configure static IP");
             return false;
         }
     }
@@ -552,7 +553,7 @@ void WiFiManager::checkConnection() {
     if (m_status == WiFiStatus::LOST_CONNECTION && m_stationConfig.autoReconnect) {
         uint32_t now = millis();
         if (now - m_lastConnectAttempt > 5000 && m_retryCount < m_stationConfig.maxRetries) {
-            LOG_INFO("WiFi", "Attempting to reconnect... (attempt %d/%d)", 
+            Logger::info("WiFi", "Attempting to reconnect... (attempt %d/%d)",
                     m_retryCount + 1, m_stationConfig.maxRetries);
             
             m_retryCount++;

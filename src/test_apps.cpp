@@ -70,14 +70,14 @@ bool AppFrameworkTests::testAppBaseLifecycle() {
     logTestResult("App start", passed);
     
     // Test pause/resume
-    passed &= app->setState(AppBase::AppState::PAUSING);
-    passed &= app->pause();
-    passed &= app->setState(AppBase::AppState::PAUSED);
-    passed &= validateAppState(app, AppBase::AppState::PAUSED);
+    passed &= app->setState(AppBase::AppState::PAUSING_APP);
+    passed &= app->pauseApp();
+    passed &= app->setState(AppBase::AppState::PAUSED_APP);
+    passed &= validateAppState(app, AppBase::AppState::PAUSED_APP);
     logTestResult("App pause", passed);
     
-    passed &= app->setState(AppBase::AppState::RESUMING);
-    passed &= app->resume();
+    passed &= app->setState(AppBase::AppState::RESUMING_APP);
+    passed &= app->resumeApp();
     passed &= app->setState(AppBase::AppState::RUNNING);
     passed &= validateAppState(app, AppBase::AppState::RUNNING);
     logTestResult("App resume", passed);

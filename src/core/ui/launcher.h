@@ -1,207 +1,113 @@
-// launcher.h
-// T-Deck-Pro OS Main Launcher/Home Screen
 #pragma once
 
 #include <Arduino.h>
-#include "lvgl.h"
+#include <lvgl.h>
+#include <vector>
 #include "core/utils/logger.h"
-#include "core/apps/app_manager.h"
-#include "core/storage/storage_manager.h"
 
-// Launcher configuration
-#define LAUNCHER_APPS_PER_PAGE 6
-#define LAUNCHER_MAX_PAGES 10
-#define LAUNCHER_ICON_SIZE 64
-#define LAUNCHER_GRID_COLS 3
-#define LAUNCHER_GRID_ROWS 2
+// Define necessary symbols if not provided by LVGL config
+#ifndef LV_SYMBOL_WIFI
+#define LV_SYMBOL_WIFI "\xef\x87\xab"
+#endif
+#ifndef LV_SYMBOL_CALL
+#define LV_SYMBOL_CALL "\xef\x82\x95"
+#endif
+#ifndef LV_SYMBOL_SETTINGS
+#define LV_SYMBOL_SETTINGS "\xef\x80\x93"
+#endif
+#ifndef LV_SYMBOL_BELL
+#define LV_SYMBOL_BELL "\xef\x83\xb3"
+#endif
+#ifndef LV_SYMBOL_DIRECTORY
+#define LV_SYMBOL_DIRECTORY "\xef\x81\xbb"
+#endif
+#ifndef LV_SYMBOL_PLUS
+#define LV_SYMBOL_PLUS "\xef\x81\xa7"
+#endif
+#ifndef LV_SYMBOL_KEYBOARD
+#define LV_SYMBOL_KEYBOARD "\xef\x84\x9c"
+#endif
+#ifndef LV_SYMBOL_GPS
+#define LV_SYMBOL_GPS "\xef\x84\xa4"
+#endif
+#ifndef LV_SYMBOL_FILE
+#define LV_SYMBOL_FILE "\xef\x85\x9b"
+#endif
+#ifndef LV_SYMBOL_CLOUD
+#define LV_SYMBOL_CLOUD "\xef\x83\x82"
+#endif
 
-// Launcher states
-typedef enum {
-    LAUNCHER_STATE_HOME,        // Main home screen
-    LAUNCHER_STATE_APP_GRID,    // Application grid view
-    LAUNCHER_STATE_SETTINGS,    // Quick settings
-    LAUNCHER_STATE_NOTIFICATIONS, // Notification panel
-    LAUNCHER_STATE_SEARCH       // App search
-} launcher_state_t;
+#define STATUS_BAR_HEIGHT 30
+#define QUICK_SETTINGS_HEIGHT 50
 
-// App icon information
-struct AppIcon {
-    String appId;
-    String displayName;
-    String iconPath;
-    bool isInstalled;
-    bool isRunning;
-    bool canUninstall;
-    lv_obj_t* iconObj;
-    lv_obj_t* labelObj;
-};
-
-// Status bar information
-struct StatusInfo {
-    bool wifiConnected;
-    int wifiSignal;
-    bool cellularConnected;
-    int cellularSignal;
-    bool loraActive;
-    int batteryPercent;
-    bool usbConnected;
-    bool serverConnected;
-    String currentTime;
-    int runningApps;
-    int notifications;
+struct Notification {
+    String title;
+    String message;
+    uint32_t timestamp;
 };
 
 class Launcher {
+public:
+    static Launcher* getInstance();
+    bool init();
+    void update();
+    void addNotification(const String& title, const String& message);
+
 private:
+    Launcher();
     static Launcher* instance;
-    
-    // LVGL objects
-    lv_obj_t* mainScreen;
+
+    bool initialized;
+
+    // UI Objects
+    lv_obj_t* currentScreen;
     lv_obj_t* statusBar;
-    lv_obj_t* homeContainer;
-    lv_obj_t* appGridContainer;
-    lv_obj_t* settingsContainer;
-    lv_obj_t* notificationContainer;
-    
-    // Status bar elements
+    lv_obj_t* appGrid;
+    lv_obj_t* quickSettings;
+    lv_obj_t* notificationPanel;
+    lv_obj_t* appContainer;
+    lv_obj_t* notificationList;
+
+    // Status Bar Elements
     lv_obj_t* timeLabel;
-    lv_obj_t* batteryIcon;
+    lv_obj_t* batteryLabel;
     lv_obj_t* wifiIcon;
     lv_obj_t* cellularIcon;
     lv_obj_t* loraIcon;
-    lv_obj_t* serverIcon;
     lv_obj_t* notificationIcon;
+
+    // Quick Settings Elements
+    lv_obj_t* wifiToggle;
+    lv_obj_t* cellularToggle;
+    lv_obj_t* loraToggle;
+    lv_obj_t* settingsBtn;
     
-    // App grid
-    lv_obj_t* appGrid;
-    lv_obj_t* pageIndicator;
-    std::vector<AppIcon> appIcons;
-    int currentPage;
-    int totalPages;
-    
-    // Quick actions
-    lv_obj_t* quickActionsContainer;
-    lv_obj_t* searchButton;
-    lv_obj_t* settingsButton;
-    lv_obj_t* powerButton;
-    
-    // State management
-    launcher_state_t currentState;
-    bool initialized;
-    uint32_t lastUpdate;
-    
-    // Internal methods
+    std::vector<lv_obj_t*> appButtons;
+    std::vector<Notification> notifications;
+
+    lv_timer_t* statusUpdateTimer;
+
+    // Internal UI creation
     void createStatusBar();
-    void createHomeScreen();
     void createAppGrid();
     void createQuickSettings();
     void createNotificationPanel();
-    void updateStatusBar();
-    void updateAppGrid();
-    void loadAppIcons();
-    void refreshAppList();
-    
-    // Event handlers
-    static void appIconEventHandler(lv_event_t* e);
-    static void quickActionEventHandler(lv_event_t* e);
-    static void settingsEventHandler(lv_event_t* e);
-    static void gestureEventHandler(lv_event_t* e);
-    
-    // UI helpers
-    void showState(launcher_state_t state);
-    void hideAllContainers();
-    void updatePageIndicator();
-    lv_obj_t* createAppIcon(const AppIcon& appInfo, int gridPos);
-    void showAppContextMenu(const String& appId);
-    
-public:
-    Launcher();
-    ~Launcher();
-    
-    // Singleton access
-    static Launcher& getInstance();
-    
-    // Lifecycle
-    bool initialize();
-    void shutdown();
-    void update();
-    
-    // State management
-    void showHome();
-    void showAppGrid();
-    void showSettings();
+
+    // Core functionality
+    void refreshAppGrid();
+    void updateStatus();
     void showNotifications();
-    void showSearch();
-    launcher_state_t getCurrentState() const;
-    
-    // App management
-    void launchApp(const String& appId);
-    void closeApp(const String& appId);
-    void uninstallApp(const String& appId);
-    void refreshApps();
-    
-    // Navigation
-    void nextPage();
-    void previousPage();
-    void goToPage(int page);
-    
-    // Status updates
-    void updateStatus(const StatusInfo& status);
-    void showNotification(const String& title, const String& message, int duration = 3000);
+    void hideNotifications();
     void clearNotifications();
-    
-    // Settings
-    void showQuickSettings();
-    void toggleWifi();
-    void toggleCellular();
-    void toggleLora();
-    void adjustBrightness(int level);
-    void showPowerMenu();
-    
-    // Search
-    void showSearchDialog();
-    void searchApps(const String& query);
-    
-    // Customization
-    void setWallpaper(const String& imagePath);
-    void setTheme(const String& themeName);
-    void setGridLayout(int cols, int rows);
-    
-    // LVGL integration
-    lv_obj_t* getMainScreen() const;
-    void handleInput(lv_event_t* e);
-    
-    // Utility
-    bool isVisible() const;
-    void forceRefresh();
-};
+    const char* getAppIcon(const String& appName);
+    bool lvgl_initialized();
 
-// Convenience macros
-#define LAUNCHER Launcher::getInstance()
-
-// Launcher events
-typedef enum {
-    LAUNCHER_EVENT_APP_LAUNCHED,
-    LAUNCHER_EVENT_APP_CLOSED,
-    LAUNCHER_EVENT_STATE_CHANGED,
-    LAUNCHER_EVENT_NOTIFICATION_ADDED,
-    LAUNCHER_EVENT_SETTINGS_CHANGED
-} launcher_event_t;
-
-// Event callback type
-typedef void (*launcher_event_callback_t)(launcher_event_t event, void* data);
-
-// Launcher configuration
-struct LauncherConfig {
-    bool showStatusBar;
-    bool enableGestures;
-    bool autoHideStatusBar;
-    int statusBarHeight;
-    int iconSize;
-    int gridCols;
-    int gridRows;
-    String wallpaperPath;
-    String themeName;
-    bool enableAnimations;
-    int animationDuration;
+    // Static callbacks for LVGL
+    static void statusUpdateCallback(lv_timer_t* timer);
+    static void appLaunchCallback(lv_event_t* e);
+    static void wifiToggleCallback(lv_event_t* e);
+    static void cellularToggleCallback(lv_event_t* e);
+    static void loraToggleCallback(lv_event_t* e);
+    static void settingsCallback(lv_event_t* e);
+    static void notificationClickCallback(lv_event_t* e);
 };

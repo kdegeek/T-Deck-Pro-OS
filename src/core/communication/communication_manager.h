@@ -90,6 +90,12 @@ typedef void (*CommEventCallback)(CommInterface interface, const String& event, 
 class CommunicationManager {
 public:
     /**
+     * @brief Get singleton instance
+     * @return Pointer to singleton instance
+     */
+    static CommunicationManager* getInstance();
+
+    /**
      * @brief Constructor
      */
     CommunicationManager();
@@ -157,6 +163,36 @@ public:
      * @return true if connected, false otherwise
      */
     bool isConnected() const;
+
+    /**
+     * @brief Check if WiFi is connected
+     * @return true if WiFi connected, false otherwise
+     */
+    bool isWiFiConnected() const;
+
+    /**
+     * @brief Check if cellular is connected
+     * @return true if cellular connected, false otherwise
+     */
+    bool isCellularConnected() const;
+
+    /**
+     * @brief Check if LoRa is active
+     * @return true if LoRa active, false otherwise
+     */
+    bool isLoRaActive() const;
+
+    /**
+     * @brief Set preferred interface
+     * @param interface Preferred interface
+     */
+    void setPreferredInterface(CommInterface interface);
+
+    /**
+     * @brief Enable auto failover between interfaces
+     * @param enable Enable or disable auto failover
+     */
+    void setAutoFailover(bool enable);
 
     /**
      * @brief Get best available interface for internet connectivity

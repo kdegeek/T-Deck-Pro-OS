@@ -145,7 +145,7 @@ public:
     ~ServerIntegration();
     
     // Singleton access
-    static ServerIntegration& getInstance();
+    static ServerIntegration* getInstance();
     
     // Lifecycle
     bool initialize(const ServerConfig& serverConfig);
@@ -214,6 +214,10 @@ public:
     String getServerStatus() const;
     bool testConnection();
     void forceReconnect();
+    
+    // Battery monitoring
+    float getBatteryVoltage();
+    int getBatteryPercentage();
 };
 
 // Convenience macros

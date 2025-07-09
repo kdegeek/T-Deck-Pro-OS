@@ -3,16 +3,19 @@
 #include <SPIFFS.h>
 #include <SD.h>
 #include <ArduinoJson.h>
-#include <esp_heap_caps.h>
 
 StorageManager* StorageManager::instance = nullptr;
 
 StorageManager::StorageManager() : 
-    flashUsed(0), 
-    sdUsed(0), 
-    flashTotal(0), 
-    sdTotal(0),
-    initialized(false) {
+    flashInitialized(false),
+    sdInitialized(false),
+    defaultPriority(STORAGE_PRIORITY_BALANCED),
+    flashWarningThreshold(0.8),
+    flashCriticalThreshold(0.9) {
+}
+
+StorageManager::~StorageManager() {
+    shutdown();
 }
 
 StorageManager& StorageManager::getInstance() {
@@ -22,513 +25,679 @@ StorageManager& StorageManager::getInstance() {
     return *instance;
 }
 
-bool StorageManager::init() {
+bool StorageManager::initialize() {
     Logger::info("StorageManager", "Initializing storage systems...");
     
     // Initialize SPIFFS (Flash storage)
     if (!SPIFFS.begin(true)) {
         Logger::error("StorageManager", "Failed to initialize SPIFFS");
-        return false;
+        flashInitialized = false;
+    } else {
+        flashInitialized = true;
+        Logger::info("StorageManager", "SPIFFS initialized: %d/%d bytes used", 
+                     SPIFFS.usedBytes(), SPIFFS.totalBytes());
     }
-    
-    flashTotal = SPIFFS.totalBytes();
-    flashUsed = SPIFFS.usedBytes();
-    Logger::info("StorageManager", "SPIFFS initialized: %d/%d bytes used", flashUsed, flashTotal);
     
     // Initialize SD Card
     if (!SD.begin()) {
         Logger::warning("StorageManager", "SD card not available - running in flash-only mode");
-        sdAvailable = false;
+        sdInitialized = false;
     } else {
-        sdAvailable = true;
-        sdTotal = SD.totalBytes();
-        sdUsed = SD.usedBytes();
-        Logger::info("StorageManager", "SD card initialized: %llu/%llu bytes used", sdUsed, sdTotal);
+        sdInitialized = true;
+        Logger::info("StorageManager", "SD card initialized: %llu/%llu bytes used", 
+                     SD.usedBytes(), SD.totalBytes());
         
         // Create app directories on SD card
-        createDirectory("/apps");
-        createDirectory("/apps/installed");
-        createDirectory("/apps/cache");
-        createDirectory("/data");
-        createDirectory("/ota");
+        createDirectory("/apps", STORAGE_SD_CARD);
+        createDirectory("/data", STORAGE_SD_CARD);
+        createDirectory("/ota", STORAGE_SD_CARD);
     }
     
-    // Load storage configuration
-    loadStorageConfig();
-    
-    // Perform initial optimization
-    optimizeStorage();
-    
-    initialized = true;
     Logger::info("StorageManager", "Storage manager initialized successfully");
+    return flashInitialized || sdInitialized;
+}
+
+void StorageManager::shutdown() {
+    if (flashInitialized) {
+        SPIFFS.end();
+        flashInitialized = false;
+    }
+    if (sdInitialized) {
+        SD.end();
+        sdInitialized = false;
+    }
+    Logger::info("StorageManager", "Storage manager shutdown");
+}
+
+bool StorageManager::isFlashAvailable() const {
+    return flashInitialized;
+}
+
+bool StorageManager::isSDAvailable() const {
+    return sdInitialized;
+}
+
+bool StorageManager::initializeFlash() {
+    if (!flashInitialized) {
+        flashInitialized = SPIFFS.begin(true);
+    }
+    return flashInitialized;
+}
+
+bool StorageManager::initializeSD() {
+    if (!sdInitialized) {
+        sdInitialized = SD.begin();
+    }
+    return sdInitialized;
+}
+
+storage_type_t StorageManager::selectBestStorage(size_t fileSize, storage_priority_t priority) {
+    StorageStats stats = getStorageStats();
+    
+    switch (priority) {
+        case STORAGE_PRIORITY_FLASH:
+            if (flashInitialized && stats.flashFree >= fileSize) {
+                return STORAGE_FLASH;
+            }
+            if (sdInitialized && stats.sdFree >= fileSize) {
+                return STORAGE_SD_CARD;
+            }
+            break;
+            
+        case STORAGE_PRIORITY_SD:
+            if (sdInitialized && stats.sdFree >= fileSize) {
+                return STORAGE_SD_CARD;
+            }
+            if (flashInitialized && stats.flashFree >= fileSize) {
+                return STORAGE_FLASH;
+            }
+            break;
+            
+        case STORAGE_PRIORITY_BALANCED:
+        default:
+            // For small files, prefer flash if available and not critical
+            if (fileSize < (1024 * 1024) && flashInitialized && 
+                stats.flashFree >= fileSize && !isFlashCritical()) {
+                return STORAGE_FLASH;
+            }
+            // Otherwise prefer SD card
+            if (sdInitialized && stats.sdFree >= fileSize) {
+                return STORAGE_SD_CARD;
+            }
+            if (flashInitialized && stats.flashFree >= fileSize) {
+                return STORAGE_FLASH;
+            }
+            break;
+    }
+    
+    return STORAGE_AUTO; // No suitable storage found
+}
+
+bool StorageManager::writeFile(const String& path, const uint8_t* data, size_t size, 
+                              storage_priority_t priority) {
+    storage_type_t storage = selectBestStorage(size, priority);
+    
+    if (storage == STORAGE_AUTO) {
+        Logger::error("StorageManager", "No suitable storage for file: %s", path.c_str());
+        return false;
+    }
+    
+    fs::FS& fs = getStorageFS(storage);
+    File file = fs.open(path, "w");
+    if (!file) {
+        Logger::error("StorageManager", "Failed to create file: %s", path.c_str());
+        return false;
+    }
+    
+    size_t written = file.write(data, size);
+    file.close();
+    
+    if (written != size) {
+        Logger::error("StorageManager", "Failed to write complete file data");
+        return false;
+    }
+    
+    Logger::info("StorageManager", "File written successfully: %s (%d bytes)", path.c_str(), size);
     return true;
 }
 
-bool StorageManager::installApp(const String& appName, const uint8_t* appData, size_t appSize) {
-    if (!initialized) {
-        Logger::error("StorageManager", "Storage manager not initialized");
-        return false;
-    }
-    
-    Logger::info("StorageManager", "Installing app: %s (%d bytes)", appName.c_str(), appSize);
-    
-    // Determine storage location based on size and available space
-    StorageLocation location = determineStorageLocation(appSize);
-    
-    String appPath;
-    File appFile;
-    
-    if (location == STORAGE_FLASH) {
-        appPath = "/apps/" + appName + ".bin";
-        appFile = SPIFFS.open(appPath, "w");
-    } else if (location == STORAGE_SD && sdAvailable) {
-        appPath = "/apps/installed/" + appName + ".bin";
-        appFile = SD.open(appPath, "w");
-    } else {
-        Logger::error("StorageManager", "No suitable storage location for app: %s", appName.c_str());
-        return false;
-    }
-    
-    if (!appFile) {
-        Logger::error("StorageManager", "Failed to create app file: %s", appPath.c_str());
-        return false;
-    }
-    
-    // Write app data
-    size_t written = appFile.write(appData, appSize);
-    appFile.close();
-    
-    if (written != appSize) {
-        Logger::error("StorageManager", "Failed to write complete app data");
-        return false;
-    }
-    
-    // Update app registry
-    AppInfo appInfo;
-    appInfo.name = appName;
-    appInfo.size = appSize;
-    appInfo.location = location;
-    appInfo.path = appPath;
-    appInfo.installed = true;
-    appInfo.lastUsed = millis();
-    
-    installedApps[appName] = appInfo;
-    saveStorageConfig();
-    
-    Logger::info("StorageManager", "App installed successfully: %s", appName.c_str());
-    return true;
-}
-
-bool StorageManager::loadApp(const String& appName, uint8_t** appData, size_t* appSize) {
-    if (!initialized) {
-        Logger::error("StorageManager", "Storage manager not initialized");
-        return false;
-    }
-    
-    auto it = installedApps.find(appName);
-    if (it == installedApps.end()) {
-        Logger::error("StorageManager", "App not found: %s", appName.c_str());
-        return false;
-    }
-    
-    AppInfo& appInfo = it->second;
-    Logger::info("StorageManager", "Loading app: %s from %s", appName.c_str(), 
-                 appInfo.location == STORAGE_FLASH ? "flash" : "SD");
-    
-    File appFile;
-    if (appInfo.location == STORAGE_FLASH) {
-        appFile = SPIFFS.open(appInfo.path, "r");
-    } else {
-        appFile = SD.open(appInfo.path, "r");
-    }
-    
-    if (!appFile) {
-        Logger::error("StorageManager", "Failed to open app file: %s", appInfo.path.c_str());
-        return false;
-    }
-    
-    size_t fileSize = appFile.size();
-    
-    // Allocate memory for app data
-    *appData = (uint8_t*)heap_caps_malloc(fileSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!*appData) {
-        // Try regular heap if PSRAM allocation fails
-        *appData = (uint8_t*)malloc(fileSize);
-        if (!*appData) {
-            Logger::error("StorageManager", "Failed to allocate memory for app: %s", appName.c_str());
-            appFile.close();
-            return false;
+bool StorageManager::readFile(const String& path, uint8_t* buffer, size_t bufferSize, size_t* bytesRead) {
+    // Try flash first
+    if (flashInitialized) {
+        File file = SPIFFS.open(path, "r");
+        if (file) {
+            size_t fileSize = file.size();
+            size_t toRead = (fileSize < bufferSize) ? fileSize : bufferSize;
+            *bytesRead = file.readBytes((char*)buffer, toRead);
+            file.close();
+            return (*bytesRead == toRead);
         }
     }
     
-    // Read app data
-    size_t bytesRead = appFile.readBytes((char*)*appData, fileSize);
-    appFile.close();
-    
-    if (bytesRead != fileSize) {
-        Logger::error("StorageManager", "Failed to read complete app data");
-        free(*appData);
-        *appData = nullptr;
-        return false;
+    // Try SD card
+    if (sdInitialized) {
+        File file = SD.open(path, "r");
+        if (file) {
+            size_t fileSize = file.size();
+            size_t toRead = (fileSize < bufferSize) ? fileSize : bufferSize;
+            *bytesRead = file.readBytes((char*)buffer, toRead);
+            file.close();
+            return (*bytesRead == toRead);
+        }
     }
     
-    *appSize = fileSize;
-    appInfo.lastUsed = millis();
-    
-    Logger::info("StorageManager", "App loaded successfully: %s (%d bytes)", appName.c_str(), fileSize);
-    return true;
+    Logger::error("StorageManager", "File not found: %s", path.c_str());
+    return false;
 }
 
-bool StorageManager::unloadApp(const String& appName) {
-    // This is handled by the app manager when it frees the app memory
-    // We just update the last used time
-    auto it = installedApps.find(appName);
-    if (it != installedApps.end()) {
-        it->second.lastUsed = millis();
+bool StorageManager::deleteFile(const String& path) {
+    bool deleted = false;
+    
+    // Try flash first
+    if (flashInitialized && SPIFFS.exists(path)) {
+        deleted = SPIFFS.remove(path);
+    }
+    
+    // Try SD card
+    if (!deleted && sdInitialized && SD.exists(path)) {
+        deleted = SD.remove(path);
+    }
+    
+    if (deleted) {
+        Logger::info("StorageManager", "File deleted: %s", path.c_str());
+    } else {
+        Logger::error("StorageManager", "Failed to delete file: %s", path.c_str());
+    }
+    
+    return deleted;
+}
+
+bool StorageManager::fileExists(const String& path) {
+    if (flashInitialized && SPIFFS.exists(path)) {
+        return true;
+    }
+    if (sdInitialized && SD.exists(path)) {
         return true;
     }
     return false;
 }
 
-bool StorageManager::removeApp(const String& appName) {
-    if (!initialized) {
-        Logger::error("StorageManager", "Storage manager not initialized");
-        return false;
-    }
-    
-    auto it = installedApps.find(appName);
-    if (it == installedApps.end()) {
-        Logger::error("StorageManager", "App not found: %s", appName.c_str());
-        return false;
-    }
-    
-    AppInfo& appInfo = it->second;
-    Logger::info("StorageManager", "Removing app: %s", appName.c_str());
-    
-    // Delete app file
-    bool deleted = false;
-    if (appInfo.location == STORAGE_FLASH) {
-        deleted = SPIFFS.remove(appInfo.path);
-    } else {
-        deleted = SD.remove(appInfo.path);
-    }
-    
-    if (!deleted) {
-        Logger::warning("StorageManager", "Failed to delete app file: %s", appInfo.path.c_str());
-    }
-    
-    // Remove from registry
-    installedApps.erase(it);
-    saveStorageConfig();
-    
-    Logger::info("StorageManager", "App removed: %s", appName.c_str());
-    return true;
-}
-
-bool StorageManager::moveApp(const String& appName, StorageLocation newLocation) {
-    if (!initialized) {
-        Logger::error("StorageManager", "Storage manager not initialized");
-        return false;
-    }
-    
-    auto it = installedApps.find(appName);
-    if (it == installedApps.end()) {
-        Logger::error("StorageManager", "App not found: %s", appName.c_str());
-        return false;
-    }
-    
-    AppInfo& appInfo = it->second;
-    if (appInfo.location == newLocation) {
-        Logger::info("StorageManager", "App already in target location: %s", appName.c_str());
+bool StorageManager::createDirectory(const String& path, storage_type_t storage) {
+    if (storage == STORAGE_FLASH || storage == STORAGE_AUTO) {
+        // SPIFFS doesn't support directories
         return true;
     }
     
-    Logger::info("StorageManager", "Moving app %s from %s to %s", appName.c_str(),
-                 appInfo.location == STORAGE_FLASH ? "flash" : "SD",
-                 newLocation == STORAGE_FLASH ? "flash" : "SD");
+    if ((storage == STORAGE_SD_CARD || storage == STORAGE_AUTO) && sdInitialized) {
+        return SD.mkdir(path);
+    }
     
-    // Load app data
-    uint8_t* appData;
-    size_t appSize;
-    if (!loadApp(appName, &appData, &appSize)) {
-        Logger::error("StorageManager", "Failed to load app for moving: %s", appName.c_str());
+    return false;
+}
+
+bool StorageManager::moveFileInternal(const String& srcPath, storage_type_t srcType, 
+                                     const String& dstPath, storage_type_t dstType) {
+    // Read from source
+    fs::FS& srcFS = getStorageFS(srcType);
+    File srcFile = srcFS.open(srcPath, "r");
+    if (!srcFile) {
         return false;
     }
     
-    // Remove from current location
-    String oldPath = appInfo.path;
-    StorageLocation oldLocation = appInfo.location;
-    
-    // Install in new location
-    String newPath;
-    File newFile;
-    
-    if (newLocation == STORAGE_FLASH) {
-        newPath = "/apps/" + appName + ".bin";
-        newFile = SPIFFS.open(newPath, "w");
-    } else {
-        newPath = "/apps/installed/" + appName + ".bin";
-        newFile = SD.open(newPath, "w");
-    }
-    
-    if (!newFile) {
-        Logger::error("StorageManager", "Failed to create new app file: %s", newPath.c_str());
-        free(appData);
+    size_t fileSize = srcFile.size();
+    uint8_t* buffer = (uint8_t*)malloc(fileSize);
+    if (!buffer) {
+        srcFile.close();
         return false;
     }
     
-    size_t written = newFile.write(appData, appSize);
-    newFile.close();
-    free(appData);
+    size_t bytesRead = srcFile.readBytes((char*)buffer, fileSize);
+    srcFile.close();
     
-    if (written != appSize) {
-        Logger::error("StorageManager", "Failed to write app to new location");
+    if (bytesRead != fileSize) {
+        free(buffer);
         return false;
     }
     
-    // Update app info
-    appInfo.location = newLocation;
-    appInfo.path = newPath;
-    
-    // Remove old file
-    if (oldLocation == STORAGE_FLASH) {
-        SPIFFS.remove(oldPath);
-    } else {
-        SD.remove(oldPath);
+    // Write to destination
+    fs::FS& dstFS = getStorageFS(dstType);
+    File dstFile = dstFS.open(dstPath, "w");
+    if (!dstFile) {
+        free(buffer);
+        return false;
     }
     
-    saveStorageConfig();
-    Logger::info("StorageManager", "App moved successfully: %s", appName.c_str());
+    size_t bytesWritten = dstFile.write(buffer, fileSize);
+    dstFile.close();
+    free(buffer);
+    
+    if (bytesWritten != fileSize) {
+        return false;
+    }
+    
+    // Remove source file
+    srcFS.remove(srcPath);
     return true;
 }
 
-std::vector<String> StorageManager::getInstalledApps() {
-    std::vector<String> apps;
-    for (const auto& pair : installedApps) {
-        apps.push_back(pair.first);
+bool StorageManager::moveFile(const String& srcPath, const String& dstPath, storage_type_t dstStorage) {
+    // Determine source storage
+    storage_type_t srcStorage = STORAGE_AUTO;
+    if (flashInitialized && SPIFFS.exists(srcPath)) {
+        srcStorage = STORAGE_FLASH;
+    } else if (sdInitialized && SD.exists(srcPath)) {
+        srcStorage = STORAGE_SD_CARD;
+    } else {
+        return false;
     }
-    return apps;
+    
+    if (dstStorage == STORAGE_AUTO) {
+        dstStorage = selectBestStorage(0, defaultPriority);
+    }
+    
+    return moveFileInternal(srcPath, srcStorage, dstPath, dstStorage);
 }
 
-StorageInfo StorageManager::getStorageInfo() {
-    StorageInfo info;
-    
-    // Update current usage
-    if (initialized) {
-        flashUsed = SPIFFS.usedBytes();
-        flashTotal = SPIFFS.totalBytes();
-        
-        if (sdAvailable) {
-            sdUsed = SD.usedBytes();
-            sdTotal = SD.totalBytes();
-        }
+bool StorageManager::copyFile(const String& srcPath, const String& dstPath, storage_type_t dstStorage) {
+    // Similar to moveFile but don't delete source
+    storage_type_t srcStorage = STORAGE_AUTO;
+    if (flashInitialized && SPIFFS.exists(srcPath)) {
+        srcStorage = STORAGE_FLASH;
+    } else if (sdInitialized && SD.exists(srcPath)) {
+        srcStorage = STORAGE_SD_CARD;
+    } else {
+        return false;
     }
     
-    info.flashUsed = flashUsed;
-    info.flashTotal = flashTotal;
-    info.flashAvailable = flashTotal - flashUsed;
-    info.sdUsed = sdUsed;
-    info.sdTotal = sdTotal;
-    info.sdAvailable = sdTotal - sdUsed;
-    info.sdCardPresent = sdAvailable;
+    if (dstStorage == STORAGE_AUTO) {
+        dstStorage = selectBestStorage(0, defaultPriority);
+    }
+    
+    // Read from source
+    fs::FS& srcFS = getStorageFS(srcStorage);
+    File srcFile = srcFS.open(srcPath, "r");
+    if (!srcFile) {
+        return false;
+    }
+    
+    size_t fileSize = srcFile.size();
+    uint8_t* buffer = (uint8_t*)malloc(fileSize);
+    if (!buffer) {
+        srcFile.close();
+        return false;
+    }
+    
+    size_t bytesRead = srcFile.readBytes((char*)buffer, fileSize);
+    srcFile.close();
+    
+    if (bytesRead != fileSize) {
+        free(buffer);
+        return false;
+    }
+    
+    // Write to destination
+    fs::FS& dstFS = getStorageFS(dstStorage);
+    File dstFile = dstFS.open(dstPath, "w");
+    if (!dstFile) {
+        free(buffer);
+        return false;
+    }
+    
+    size_t bytesWritten = dstFile.write(buffer, fileSize);
+    dstFile.close();
+    free(buffer);
+    
+    return (bytesWritten == fileSize);
+}
+
+FileInfo StorageManager::getFileInfo(const String& path) {
+    FileInfo info;
+    info.path = path;
+    info.size = 0;
+    info.location = STORAGE_AUTO;
+    info.isDirectory = false;
+    info.lastModified = 0;
+    info.canMove = true;
+    
+    // Check flash first
+    if (flashInitialized && SPIFFS.exists(path)) {
+        File file = SPIFFS.open(path);
+        if (file) {
+            info.size = file.size();
+            info.location = STORAGE_FLASH;
+            info.isDirectory = file.isDirectory();
+            info.lastModified = file.getLastWrite();
+            file.close();
+        }
+    }
+    // Check SD card
+    else if (sdInitialized && SD.exists(path)) {
+        File file = SD.open(path);
+        if (file) {
+            info.size = file.size();
+            info.location = STORAGE_SD_CARD;
+            info.isDirectory = file.isDirectory();
+            info.lastModified = file.getLastWrite();
+            file.close();
+        }
+    }
     
     return info;
 }
 
+std::vector<FileInfo> StorageManager::listFiles(const String& directory, bool recursive) {
+    std::vector<FileInfo> files;
+    
+    // List files from flash
+    if (flashInitialized) {
+        File root = SPIFFS.open(directory);
+        if (root && root.isDirectory()) {
+            File file = root.openNextFile();
+            while (file) {
+                FileInfo info;
+                info.path = file.path();
+                info.size = file.size();
+                info.location = STORAGE_FLASH;
+                info.isDirectory = file.isDirectory();
+                info.lastModified = file.getLastWrite();
+                info.canMove = true;
+                files.push_back(info);
+                
+                file.close();
+                file = root.openNextFile();
+            }
+            root.close();
+        }
+    }
+    
+    // List files from SD card
+    if (sdInitialized) {
+        File root = SD.open(directory);
+        if (root && root.isDirectory()) {
+            File file = root.openNextFile();
+            while (file) {
+                FileInfo info;
+                info.path = file.path();
+                info.size = file.size();
+                info.location = STORAGE_SD_CARD;
+                info.isDirectory = file.isDirectory();
+                info.lastModified = file.getLastWrite();
+                info.canMove = true;
+                files.push_back(info);
+                
+                file.close();
+                file = root.openNextFile();
+            }
+            root.close();
+        }
+    }
+    
+    return files;
+}
+
 bool StorageManager::optimizeStorage() {
-    if (!initialized) {
-        return false;
-    }
-    
     Logger::info("StorageManager", "Optimizing storage...");
-    
-    // Get current storage usage
-    StorageInfo info = getStorageInfo();
-    
-    // If flash is getting full (>80%), move least recently used apps to SD
-    if (info.flashUsed > (info.flashTotal * 0.8) && sdAvailable) {
-        Logger::info("StorageManager", "Flash storage is %d%% full, moving apps to SD card", 
-                     (int)((info.flashUsed * 100) / info.flashTotal));
-        
-        // Find apps in flash, sorted by last used time
-        std::vector<std::pair<String, unsigned long>> flashApps;
-        for (const auto& pair : installedApps) {
-            if (pair.second.location == STORAGE_FLASH) {
-                flashApps.push_back({pair.first, pair.second.lastUsed});
-            }
-        }
-        
-        // Sort by last used time (oldest first)
-        std::sort(flashApps.begin(), flashApps.end(), 
-                  [](const auto& a, const auto& b) { return a.second < b.second; });
-        
-        // Move oldest apps to SD until flash usage is below 60%
-        for (const auto& app : flashApps) {
-            if (info.flashUsed < (info.flashTotal * 0.6)) {
-                break;
-            }
-            
-            if (moveApp(app.first, STORAGE_SD)) {
-                info = getStorageInfo(); // Update info after move
-            }
-        }
-    }
     
     // Clean up temporary files
     cleanupTempFiles();
+    
+    // Auto balance if flash is getting full
+    if (isFlashWarning()) {
+        autoBalance();
+    }
     
     Logger::info("StorageManager", "Storage optimization complete");
     return true;
 }
 
-bool StorageManager::createDirectory(const String& path) {
-    if (!sdAvailable) {
+bool StorageManager::moveToSD(const String& path) {
+    if (!sdInitialized) {
         return false;
     }
     
-    // Check if directory already exists
-    File dir = SD.open(path);
-    if (dir && dir.isDirectory()) {
-        dir.close();
-        return true;
-    }
-    if (dir) {
-        dir.close();
+    if (flashInitialized && SPIFFS.exists(path)) {
+        return moveFileInternal(path, STORAGE_FLASH, path, STORAGE_SD_CARD);
     }
     
-    // Create directory
-    return SD.mkdir(path);
+    return false;
 }
 
-StorageLocation StorageManager::determineStorageLocation(size_t appSize) {
-    StorageInfo info = getStorageInfo();
-    
-    // If no SD card, must use flash
-    if (!sdAvailable) {
-        if (info.flashAvailable >= appSize) {
-            return STORAGE_FLASH;
-        } else {
-            return STORAGE_NONE; // No space available
-        }
+bool StorageManager::moveToFlash(const String& path) {
+    if (!flashInitialized) {
+        return false;
     }
     
-    // If app is small and flash has space, prefer flash for speed
-    if (appSize < (1024 * 1024) && info.flashAvailable >= appSize && 
-        info.flashUsed < (info.flashTotal * 0.7)) {
-        return STORAGE_FLASH;
+    if (sdInitialized && SD.exists(path)) {
+        return moveFileInternal(path, STORAGE_SD_CARD, path, STORAGE_FLASH);
     }
     
-    // Otherwise use SD card
-    if (info.sdAvailable >= appSize) {
-        return STORAGE_SD;
-    }
-    
-    // If SD is full but flash has space, use flash
-    if (info.flashAvailable >= appSize) {
-        return STORAGE_FLASH;
-    }
-    
-    return STORAGE_NONE; // No space available
+    return false;
 }
 
-void StorageManager::loadStorageConfig() {
-    File configFile = SPIFFS.open("/storage_config.json", "r");
-    if (!configFile) {
-        Logger::info("StorageManager", "No storage config found, creating new one");
-        return;
+bool StorageManager::autoBalance() {
+    if (!sdInitialized || !flashInitialized) {
+        return false;
     }
     
-    String configData = configFile.readString();
-    configFile.close();
+    Logger::info("StorageManager", "Auto-balancing storage...");
     
-    DynamicJsonDocument doc(4096);
-    DeserializationError error = deserializeJson(doc, configData);
-    
-    if (error) {
-        Logger::error("StorageManager", "Failed to parse storage config: %s", error.c_str());
-        return;
-    }
-    
-    // Load installed apps
-    JsonArray apps = doc["apps"];
-    for (JsonObject app : apps) {
-        AppInfo appInfo;
-        appInfo.name = app["name"].as<String>();
-        appInfo.size = app["size"];
-        appInfo.location = (StorageLocation)app["location"].as<int>();
-        appInfo.path = app["path"].as<String>();
-        appInfo.installed = app["installed"];
-        appInfo.lastUsed = app["lastUsed"];
+    // Move files from flash to SD if flash is getting full
+    if (isFlashCritical()) {
+        std::vector<FileInfo> flashFiles = listFiles("/");
         
-        installedApps[appInfo.name] = appInfo;
-    }
-    
-    Logger::info("StorageManager", "Loaded storage config with %d apps", installedApps.size());
-}
-
-void StorageManager::saveStorageConfig() {
-    DynamicJsonDocument doc(4096);
-    
-    JsonArray apps = doc.createNestedArray("apps");
-    for (const auto& pair : installedApps) {
-        const AppInfo& appInfo = pair.second;
-        JsonObject app = apps.createNestedObject();
-        app["name"] = appInfo.name;
-        app["size"] = appInfo.size;
-        app["location"] = (int)appInfo.location;
-        app["path"] = appInfo.path;
-        app["installed"] = appInfo.installed;
-        app["lastUsed"] = appInfo.lastUsed;
-    }
-    
-    File configFile = SPIFFS.open("/storage_config.json", "w");
-    if (!configFile) {
-        Logger::error("StorageManager", "Failed to open storage config for writing");
-        return;
-    }
-    
-    serializeJson(doc, configFile);
-    configFile.close();
-    
-    Logger::debug("StorageManager", "Storage config saved");
-}
-
-void StorageManager::cleanupTempFiles() {
-    // Clean up temporary files in flash
-    File root = SPIFFS.open("/");
-    File file = root.openNextFile();
-    while (file) {
-        String fileName = file.name();
-        if (fileName.endsWith(".tmp") || fileName.startsWith("temp_")) {
-            String filePath = "/" + fileName;
-            file.close();
-            SPIFFS.remove(filePath);
-            Logger::debug("StorageManager", "Removed temp file: %s", filePath.c_str());
-            file = root.openNextFile();
-        } else {
-            file.close();
-            file = root.openNextFile();
-        }
-    }
-    root.close();
-    
-    // Clean up temporary files on SD card
-    if (sdAvailable) {
-        File sdRoot = SD.open("/");
-        File sdFile = sdRoot.openNextFile();
-        while (sdFile) {
-            String fileName = sdFile.name();
-            if (fileName.endsWith(".tmp") || fileName.startsWith("temp_")) {
-                String filePath = "/" + fileName;
-                sdFile.close();
-                SD.remove(filePath);
-                Logger::debug("StorageManager", "Removed SD temp file: %s", filePath.c_str());
-                sdFile = sdRoot.openNextFile();
-            } else {
-                sdFile.close();
-                sdFile = sdRoot.openNextFile();
+        // Sort by size (largest first) to free up space quickly
+        std::sort(flashFiles.begin(), flashFiles.end(), 
+                  [](const FileInfo& a, const FileInfo& b) { return a.size > b.size; });
+        
+        for (const FileInfo& file : flashFiles) {
+            if (file.location == STORAGE_FLASH && file.canMove && !file.isDirectory) {
+                if (moveToSD(file.path)) {
+                    Logger::info("StorageManager", "Moved file to SD: %s", file.path.c_str());
+                    
+                    // Check if we've freed enough space
+                    if (!isFlashCritical()) {
+                        break;
+                    }
+                }
             }
         }
-        sdRoot.close();
+    }
+    
+    return true;
+}
+
+bool StorageManager::installApp(const String& appPath, const uint8_t* appData, size_t appSize) {
+    return writeFile(appPath, appData, appSize, STORAGE_PRIORITY_BALANCED);
+}
+
+bool StorageManager::uninstallApp(const String& appId) {
+    String appPath = STORAGE_PATH_APPS + String("/") + appId + ".bin";
+    return deleteFile(appPath);
+}
+
+bool StorageManager::loadAppFromStorage(const String& appId, uint8_t* buffer, size_t bufferSize, size_t* appSize) {
+    String appPath = STORAGE_PATH_APPS + String("/") + appId + ".bin";
+    return readFile(appPath, buffer, bufferSize, appSize);
+}
+
+std::vector<String> StorageManager::getInstalledApps() {
+    std::vector<String> apps;
+    std::vector<FileInfo> files = listFiles(STORAGE_PATH_APPS);
+    
+    for (const FileInfo& file : files) {
+        if (!file.isDirectory && file.path.endsWith(".bin")) {
+            String appName = file.path;
+            appName.replace(STORAGE_PATH_APPS + String("/"), "");
+            appName.replace(".bin", "");
+            apps.push_back(appName);
+        }
+    }
+    
+    return apps;
+}
+
+void StorageManager::setStoragePriority(storage_priority_t priority) {
+    defaultPriority = priority;
+}
+
+void StorageManager::setFlashThresholds(float warning, float critical) {
+    flashWarningThreshold = warning;
+    flashCriticalThreshold = critical;
+}
+
+StorageStats StorageManager::getStorageStats() {
+    StorageStats stats;
+    
+    if (flashInitialized) {
+        stats.flashTotal = SPIFFS.totalBytes();
+        stats.flashUsed = SPIFFS.usedBytes();
+        stats.flashFree = stats.flashTotal - stats.flashUsed;
+    } else {
+        stats.flashTotal = 0;
+        stats.flashUsed = 0;
+        stats.flashFree = 0;
+    }
+    
+    if (sdInitialized) {
+        stats.sdTotal = SD.totalBytes();
+        stats.sdUsed = SD.usedBytes();
+        stats.sdFree = stats.sdTotal - stats.sdUsed;
+    } else {
+        stats.sdTotal = 0;
+        stats.sdUsed = 0;
+        stats.sdFree = 0;
+    }
+    
+    // Count files (simplified)
+    stats.flashFiles = 0;
+    stats.sdFiles = 0;
+    stats.totalFiles = stats.flashFiles + stats.sdFiles;
+    
+    return stats;
+}
+
+float StorageManager::getFlashUsagePercent() {
+    if (!flashInitialized) {
+        return 0.0;
+    }
+    
+    size_t total = SPIFFS.totalBytes();
+    size_t used = SPIFFS.usedBytes();
+    
+    if (total == 0) {
+        return 0.0;
+    }
+    
+    return (float(used) / float(total)) * 100.0;
+}
+
+float StorageManager::getSDUsagePercent() {
+    if (!sdInitialized) {
+        return 0.0;
+    }
+    
+    size_t total = SD.totalBytes();
+    size_t used = SD.usedBytes();
+    
+    if (total == 0) {
+        return 0.0;
+    }
+    
+    return (float(used) / float(total)) * 100.0;
+}
+
+bool StorageManager::isFlashCritical() {
+    return getFlashUsagePercent() > (flashCriticalThreshold * 100.0);
+}
+
+bool StorageManager::isFlashWarning() {
+    return getFlashUsagePercent() > (flashWarningThreshold * 100.0);
+}
+
+bool StorageManager::cleanupTempFiles() {
+    bool cleaned = false;
+    
+    // Clean flash temp files
+    if (flashInitialized) {
+        File root = SPIFFS.open("/");
+        File file = root.openNextFile();
+        while (file) {
+            String fileName = file.name();
+            if (fileName.endsWith(".tmp") || fileName.startsWith("temp_")) {
+                file.close();
+                if (SPIFFS.remove("/" + fileName)) {
+                    cleaned = true;
+                    Logger::debug("StorageManager", "Removed temp file: %s", fileName.c_str());
+                }
+                file = root.openNextFile();
+            } else {
+                file.close();
+                file = root.openNextFile();
+            }
+        }
+        root.close();
+    }
+    
+    // Clean SD temp files
+    if (sdInitialized) {
+        File root = SD.open("/");
+        File file = root.openNextFile();
+        while (file) {
+            String fileName = file.name();
+            if (fileName.endsWith(".tmp") || fileName.startsWith("temp_")) {
+                file.close();
+                if (SD.remove("/" + fileName)) {
+                    cleaned = true;
+                    Logger::debug("StorageManager", "Removed SD temp file: %s", fileName.c_str());
+                }
+                file = root.openNextFile();
+            } else {
+                file.close();
+                file = root.openNextFile();
+            }
+        }
+        root.close();
+    }
+    
+    return cleaned;
+}
+
+bool StorageManager::defragmentStorage() {
+    // SPIFFS and SD don't need traditional defragmentation
+    Logger::info("StorageManager", "Storage defragmentation not needed for SPIFFS/SD");
+    return true;
+}
+
+bool StorageManager::verifyStorageIntegrity() {
+    bool integrity = true;
+    
+    if (flashInitialized) {
+        // Basic SPIFFS check
+        if (!SPIFFS.begin()) {
+            Logger::error("StorageManager", "SPIFFS integrity check failed");
+            integrity = false;
+        }
+    }
+    
+    // SD card integrity is harder to check without specific tools
+    Logger::info("StorageManager", "Storage integrity check %s", integrity ? "passed" : "failed");
+    return integrity;
+}
+
+fs::FS& StorageManager::getFlashFS() {
+    return SPIFFS;
+}
+
+fs::FS& StorageManager::getSDFS() {
+    return SD;
+}
+
+fs::FS& StorageManager::getStorageFS(storage_type_t storage) {
+    switch (storage) {
+        case STORAGE_FLASH:
+            return SPIFFS;
+        case STORAGE_SD_CARD:
+        default:
+            return SD;
     }
 }

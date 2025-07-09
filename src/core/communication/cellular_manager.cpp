@@ -6,6 +6,8 @@
  */
 
 #include "cellular_manager.h"
+#include "../utils/logger.h"
+#include "core/hal/board_config.h"
 #include <Arduino.h>
 
 namespace TDeckOS {
@@ -36,11 +38,11 @@ CellularManager::~CellularManager() {
 
 bool CellularManager::initialize(const CellularConfig& config) {
     if (m_initialized) {
-        LOG_WARN("Cellular", "Already initialized");
+        Logger::warning("CellularManager", "Already initialized");
         return true;
     }
 
-    LOG_INFO("Cellular", "Initializing cellular manager...");
+    Logger::info("CellularManager", "Initializing cellular manager...");
     
     m_config = config;
     m_initTime = millis();
@@ -48,29 +50,29 @@ bool CellularManager::initialize(const CellularConfig& config) {
     // Create mutex
     m_mutex = xSemaphoreCreateMutex();
     if (!m_mutex) {
-        LOG_ERROR("Cellular", "Failed to create mutex");
+        Logger::error("CellularManager", "Failed to create mutex");
         return false;
     }
     
     // Create command queue
     m_commandQueue = xQueueCreate(10, sizeof(String*));
     if (!m_commandQueue) {
-        LOG_ERROR("Cellular", "Failed to create command queue");
+        Logger::error("CellularManager", "Failed to create command queue");
         vSemaphoreDelete(m_mutex);
         return false;
     }
     
     // Initialize serial communication
     m_serial = &Serial1;
-    m_serial->begin(m_config.baudRate, SERIAL_8N1, BOARD_A7682E_RXD, BOARD_A7682E_TXD);
+    m_serial->begin(m_config.baudRate, SERIAL_8N1, BOARD_MODEM_RX, BOARD_MODEM_TX);
     
     // Configure control pins
-    pinMode(BOARD_A7682E_PWRKEY, OUTPUT);
-    pinMode(BOARD_A7682E_RST, OUTPUT);
-    pinMode(BOARD_6609_EN, OUTPUT);
+    pinMode(BOARD_MODEM_PWRKEY, OUTPUT);
+    pinMode(BOARD_MODEM_DTR, OUTPUT);
+    pinMode(BOARD_MODEM_PWR, OUTPUT);
     
     // Enable power supply
-    digitalWrite(BOARD_6609_EN, HIGH);
+    digitalWrite(BOARD_MODEM_PWR, HIGH);
     delay(100);
     
     // Create cellular task
@@ -84,7 +86,7 @@ bool CellularManager::initialize(const CellularConfig& config) {
     );
     
     if (result != pdPASS) {
-        LOG_ERROR("Cellular", "Failed to create cellular task");
+        Logger::error("CellularManager", "Failed to create cellular task");
         vQueueDelete(m_commandQueue);
         vSemaphoreDelete(m_mutex);
         return false;
@@ -96,7 +98,7 @@ bool CellularManager::initialize(const CellularConfig& config) {
     // Reset statistics
     resetStats();
     
-    LOG_INFO("Cellular", "Cellular manager initialized successfully");
+    Logger::info("CellularManager", "Cellular manager initialized successfully");
     return true;
 }
 
@@ -105,7 +107,7 @@ void CellularManager::deinitialize() {
         return;
     }
     
-    LOG_INFO("Cellular", "Deinitializing cellular manager...");
+    Logger::info("CellularManager", "Deinitializing cellular manager...");
     
     // Power off modem
     powerOff();
@@ -117,7 +119,7 @@ void CellularManager::deinitialize() {
     }
     
     // Disable power supply
-    digitalWrite(BOARD_6609_EN, LOW);
+    digitalWrite(BOARD_MODEM_PWR, LOW);
     
     // Clean up FreeRTOS objects
     if (m_commandQueue) {
@@ -134,32 +136,32 @@ void CellularManager::deinitialize() {
     m_poweredOn = false;
     m_status = CellularStatus::OFF;
     
-    LOG_INFO("Cellular", "Cellular manager deinitialized");
+    Logger::info("CellularManager", "Cellular manager deinitialized");
 }
 
 bool CellularManager::powerOn() {
     if (!m_initialized) {
-        LOG_ERROR("Cellular", "Not initialized");
+        Logger::error("CellularManager", "Not initialized");
         return false;
     }
     
     if (m_poweredOn) {
-        LOG_WARN("Cellular", "Already powered on");
+        Logger::warning("CellularManager", "Already powered on");
         return true;
     }
     
-    LOG_INFO("Cellular", "Powering on A7682E modem...");
+    Logger::info("CellularManager", "Powering on A7682E modem...");
     
     // Reset modem
-    digitalWrite(BOARD_A7682E_RST, LOW);
+    digitalWrite(BOARD_MODEM_DTR, LOW);
     delay(100);
-    digitalWrite(BOARD_A7682E_RST, HIGH);
+    digitalWrite(BOARD_MODEM_DTR, HIGH);
     delay(100);
     
     // Power on sequence
-    digitalWrite(BOARD_A7682E_PWRKEY, LOW);
+    digitalWrite(BOARD_MODEM_PWRKEY, LOW);
     delay(1000);
-    digitalWrite(BOARD_A7682E_PWRKEY, HIGH);
+    digitalWrite(BOARD_MODEM_PWRKEY, HIGH);
     delay(2000);
     
     // Wait for modem to respond
@@ -171,13 +173,13 @@ bool CellularManager::powerOn() {
         if (sendATCommand("AT", response, 1000)) {
             if (response.indexOf("OK") >= 0) {
                 m_poweredOn = true;
-                LOG_INFO("Cellular", "Modem powered on successfully");
+                Logger::info("CellularManager", "Modem powered on successfully");
                 
                 // Initialize modem
                 if (initializeModem()) {
                     return true;
                 } else {
-                    LOG_ERROR("Cellular", "Failed to initialize modem");
+                    Logger::error("CellularManager", "Failed to initialize modem");
                     powerOff();
                     return false;
                 }
@@ -186,7 +188,7 @@ bool CellularManager::powerOn() {
         delay(1000);
     }
     
-    LOG_ERROR("Cellular", "Failed to power on modem");
+    Logger::error("CellularManager", "Failed to power on modem");
     m_status = CellularStatus::ERROR;
     return false;
 }
@@ -196,27 +198,27 @@ bool CellularManager::powerOff() {
         return true;
     }
     
-    LOG_INFO("Cellular", "Powering off A7682E modem...");
+    Logger::info("CellularManager", "Powering off A7682E modem...");
     
     // Send power off command
     String response;
     sendATCommand("AT+CPOF", response, 5000);
     
     // Force power off if needed
-    digitalWrite(BOARD_A7682E_PWRKEY, LOW);
+    digitalWrite(BOARD_MODEM_PWRKEY, LOW);
     delay(3000);
-    digitalWrite(BOARD_A7682E_PWRKEY, HIGH);
+    digitalWrite(BOARD_MODEM_PWRKEY, HIGH);
     
     m_poweredOn = false;
     m_status = CellularStatus::OFF;
     
-    LOG_INFO("Cellular", "Modem powered off");
+    Logger::info("CellularManager", "Modem powered off");
     return true;
 }
 
 bool CellularManager::connect(CellularEventCallback callback) {
     if (!m_poweredOn) {
-        LOG_ERROR("Cellular", "Modem not powered on");
+        Logger::error("CellularManager", "Modem not powered on");
         return false;
     }
     
@@ -225,19 +227,19 @@ bool CellularManager::connect(CellularEventCallback callback) {
     m_lastConnectAttempt = millis();
     m_stats.connectAttempts++;
     
-    LOG_INFO("Cellular", "Connecting to cellular network...");
+    Logger::info("CellularManager", "Connecting to cellular network...");
     m_status = CellularStatus::SEARCHING;
     
     // Check SIM card
     if (getSIMStatus() != SIMStatus::READY) {
-        LOG_ERROR("Cellular", "SIM card not ready");
+        Logger::error("CellularManager", "SIM card not ready");
         m_status = CellularStatus::ERROR;
         return false;
     }
     
     // Set up PDP context
     if (!setupPDP()) {
-        LOG_ERROR("Cellular", "Failed to setup PDP context");
+        Logger::error("CellularManager", "Failed to setup PDP context");
         m_status = CellularStatus::ERROR;
         return false;
     }
@@ -249,7 +251,7 @@ bool CellularManager::connect(CellularEventCallback callback) {
             info.registration == NetworkRegistration::REGISTERED_ROAMING) {
             
             m_status = CellularStatus::REGISTERED;
-            LOG_INFO("Cellular", "Registered to network: %s", info.operatorName.c_str());
+            Logger::info("Cellular", "Registered to network: " + info.operatorName);
             
             // Activate PDP context
             String response;
@@ -257,7 +259,7 @@ bool CellularManager::connect(CellularEventCallback callback) {
                 if (response.indexOf("OK") >= 0) {
                     m_status = CellularStatus::CONNECTED;
                     m_stats.successfulConnections++;
-                    LOG_INFO("Cellular", "Connected to cellular network");
+                    Logger::info("CellularManager", "Connected to cellular network");
                     
                     if (m_eventCallback) {
                         m_eventCallback(m_status, "Connected");
@@ -269,14 +271,14 @@ bool CellularManager::connect(CellularEventCallback callback) {
         delay(1000);
     }
     
-    LOG_ERROR("Cellular", "Failed to connect to network");
+    Logger::error("CellularManager", "Failed to connect to network");
     m_status = CellularStatus::ERROR;
     return false;
 }
 
 void CellularManager::disconnect() {
     if (m_status == CellularStatus::CONNECTED) {
-        LOG_INFO("Cellular", "Disconnecting from cellular network...");
+        Logger::info("CellularManager", "Disconnecting from cellular network...");
         
         String response;
         sendATCommand("AT+CGACT=0,1", response, 10000);
@@ -356,11 +358,11 @@ uint8_t CellularManager::getSignalQuality() {
 
 bool CellularManager::sendSMS(const String& number, const String& message) {
     if (!isConnected()) {
-        LOG_ERROR("Cellular", "Not connected to network");
+        Logger::error("CellularManager", "Not connected to network");
         return false;
     }
     
-    LOG_INFO("Cellular", "Sending SMS to %s", number.c_str());
+    Logger::info("Cellular", "Sending SMS to " + number);
     
     // Set SMS text mode
     String response;
@@ -380,11 +382,11 @@ bool CellularManager::sendSMS(const String& number, const String& message) {
     // Wait for response
     if (waitForResponse("OK", 30000)) {
         m_stats.smsMessagesSent++;
-        LOG_INFO("Cellular", "SMS sent successfully");
+        Logger::info("CellularManager", "SMS sent successfully");
         return true;
     }
     
-    LOG_ERROR("Cellular", "Failed to send SMS");
+    Logger::error("CellularManager", "Failed to send SMS");
     return false;
 }
 
@@ -423,11 +425,11 @@ bool CellularManager::deleteSMS(uint16_t index) {
 
 bool CellularManager::makeCall(const String& number) {
     if (!isConnected()) {
-        LOG_ERROR("Cellular", "Not connected to network");
+        Logger::error("CellularManager", "Not connected to network");
         return false;
     }
     
-    LOG_INFO("Cellular", "Making call to %s", number.c_str());
+    Logger::info("Cellular", "Making call to " + number);
     
     String cmd = "ATD" + number + ";";
     String response;
@@ -480,7 +482,7 @@ bool CellularManager::sendATCommand(const String& command, String& response, uin
     
     xSemaphoreGive(m_mutex);
     
-    LOG_DEBUG("Cellular", "AT: %s -> %s", command.c_str(), response.c_str());
+    Logger::debug("CellularManager", "AT: %s -> %s", command.c_str(), response.c_str());
     return response.length() > 0;
 }
 
@@ -542,7 +544,7 @@ void CellularManager::resetStats() {
         m_stats = CellularStats{};
         m_initTime = millis();
         xSemaphoreGive(m_mutex);
-        LOG_INFO("Cellular", "Statistics reset");
+        Logger::info("CellularManager", "Statistics reset");
     }
 }
 
@@ -553,7 +555,7 @@ void CellularManager::process() {
 void CellularManager::cellularTask(void* parameter) {
     CellularManager* manager = static_cast<CellularManager*>(parameter);
     
-    LOG_INFO("Cellular", "Cellular task started");
+    Logger::info("CellularManager", "Cellular task started");
     
     while (true) {
         // Handle incoming data
@@ -576,7 +578,7 @@ void CellularManager::cellularTask(void* parameter) {
 }
 
 bool CellularManager::initializeModem() {
-    LOG_INFO("Cellular", "Initializing modem...");
+    Logger::info("CellularManager", "Initializing modem...");
     
     String response;
     
@@ -600,7 +602,7 @@ bool CellularManager::initializeModem() {
         return false;
     }
     
-    LOG_INFO("Cellular", "Modem initialized successfully");
+    Logger::info("CellularManager", "Modem initialized successfully");
     return true;
 }
 

@@ -49,9 +49,9 @@ bool AppBase::setState(AppState newState) {
     logStateChange(oldState, newState);
 
     // Update timing
-    if (newState == AppState::RUNNING && oldState != AppState::RESUMING) {
+    if (newState == AppState::RUNNING && oldState != AppState::RESUMING_APP) {
         startTime = millis();
-    } else if (newState == AppState::PAUSED) {
+    } else if (newState == AppState::PAUSED_APP) {
         pauseTime = millis();
     }
 
@@ -229,9 +229,9 @@ void AppBase::logStateChange(AppState from, AppState to) {
         case AppState::STOPPED: fromStr = "STOPPED"; break;
         case AppState::STARTING: fromStr = "STARTING"; break;
         case AppState::RUNNING: fromStr = "RUNNING"; break;
-        case AppState::PAUSING: fromStr = "PAUSING"; break;
-        case AppState::PAUSED: fromStr = "PAUSED"; break;
-        case AppState::RESUMING: fromStr = "RESUMING"; break;
+        case AppState::PAUSING_APP: fromStr = "PAUSING"; break;
+        case AppState::PAUSED_APP: fromStr = "PAUSED"; break;
+        case AppState::RESUMING_APP: fromStr = "RESUMING"; break;
         case AppState::STOPPING: fromStr = "STOPPING"; break;
     }
     
@@ -239,9 +239,9 @@ void AppBase::logStateChange(AppState from, AppState to) {
         case AppState::STOPPED: toStr = "STOPPED"; break;
         case AppState::STARTING: toStr = "STARTING"; break;
         case AppState::RUNNING: toStr = "RUNNING"; break;
-        case AppState::PAUSING: toStr = "PAUSING"; break;
-        case AppState::PAUSED: toStr = "PAUSED"; break;
-        case AppState::RESUMING: toStr = "RESUMING"; break;
+        case AppState::PAUSING_APP: toStr = "PAUSING"; break;
+        case AppState::PAUSED_APP: toStr = "PAUSED"; break;
+        case AppState::RESUMING_APP: toStr = "RESUMING"; break;
         case AppState::STOPPING: toStr = "STOPPING"; break;
     }
 
@@ -256,12 +256,12 @@ bool AppBase::validateStateTransition(AppState from, AppState to) {
         case AppState::STARTING:
             return to == AppState::RUNNING || to == AppState::STOPPING;
         case AppState::RUNNING:
-            return to == AppState::PAUSING || to == AppState::STOPPING;
-        case AppState::PAUSING:
-            return to == AppState::PAUSED || to == AppState::STOPPING;
-        case AppState::PAUSED:
-            return to == AppState::RESUMING || to == AppState::STOPPING;
-        case AppState::RESUMING:
+            return to == AppState::PAUSING_APP || to == AppState::STOPPING;
+        case AppState::PAUSING_APP:
+            return to == AppState::PAUSED_APP || to == AppState::STOPPING;
+        case AppState::PAUSED_APP:
+            return to == AppState::RESUMING_APP || to == AppState::STOPPING;
+        case AppState::RESUMING_APP:
             return to == AppState::RUNNING || to == AppState::STOPPING;
         case AppState::STOPPING:
             return to == AppState::STOPPED;
