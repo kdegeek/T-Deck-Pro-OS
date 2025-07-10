@@ -131,6 +131,7 @@ public:
 
     bool init(const BQ27220DMData *data_memory = gauge_data_memory);
     bool reset(void);
+    bool setDefaultCapacity(uint16_t cap);
 
     // Sealed Access
     bool sealAccess(void);

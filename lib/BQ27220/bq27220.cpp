@@ -306,6 +306,20 @@ bool BQ27220::reset(void)
     return result;
 }
 
+bool BQ27220::setDefaultCapacity(uint16_t cap) {
+    uint16_t len = get_gauge_data_memory_len();
+    
+    for(int i = 0; i < len; i++) {
+        if(gauge_data_memory[i].address == BQ27220DMAddressGasGaugingCEDVProfile1FullChargeCapacity) {
+            gauge_data_memory[i].value.u16 = cap;
+        }
+        if(gauge_data_memory[i].address == BQ27220DMAddressGasGaugingCEDVProfile1DesignCapacity) {
+            gauge_data_memory[i].value.u16 = cap;
+        }
+    }
+    return true;
+}
+
 // Sealed Access
 bool BQ27220::sealAccess(void) 
 {

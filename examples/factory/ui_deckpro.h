@@ -117,12 +117,6 @@ typedef struct _ui_a7682 {
     bool (*cb)(const char *at_cmd);
 } ui_a7682_handle;
 
-typedef struct _ui_pcm5102 {
-    const char *name;
-    lv_obj_t *obj;
-    lv_obj_t *st;
-    bool (*cb)(const char *at_cmd);
-} ui_pcm5102_handle;
 
 
 typedef struct {

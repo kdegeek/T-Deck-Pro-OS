@@ -17,7 +17,7 @@ const BQ27220DMGaugingConfig data_memory_gauging_config = {
     .SME0 = 0,       // Smoothing towards EDV0 enable. Used with SMEN and SMEXT.
 };
 
-const BQ27220DMData gauge_data_memory[] = {
+BQ27220DMData gauge_data_memory[] = {
     {
         .address = BQ27220DMAddressGasGaugingCEDVProfile1GaugingConfig,
         .type = BQ27220DMTypePtr16,
@@ -162,3 +162,8 @@ const BQ27220DMData gauge_data_memory[] = {
         .type = BQ27220DMTypeEnd,
     },
 };
+
+uint16_t get_gauge_data_memory_len(void)
+{
+    return sizeof(gauge_data_memory) / sizeof(gauge_data_memory[0]);
+}

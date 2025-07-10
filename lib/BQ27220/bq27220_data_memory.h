@@ -1,5 +1,9 @@
 #pragma once
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -92,4 +96,10 @@ typedef struct
 
 _Static_assert(sizeof(BQ27220DMGaugingConfig) == 2, "Incorrect structure size");
 
-extern const BQ27220DMData gauge_data_memory[];
+extern BQ27220DMData gauge_data_memory[];
+
+uint16_t get_gauge_data_memory_len(void);
+
+#ifdef __cplusplus
+}
+#endif
