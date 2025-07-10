@@ -1,607 +1,690 @@
 /**
  * @file lora_manager.cpp
- * @brief LoRa communication manager implementation
+ * @brief T-Deck-Pro LoRa Manager - SX1262 Implementation
  * @author T-Deck-Pro OS Team
  * @date 2025
+ * @note Handles SX1262 LoRa communication with mesh networking support
  */
 
 #include "lora_manager.h"
-#include <Arduino.h>
-#include <SPI.h>
+#include "../utils/logger.h"
+#include "../hal/board_config_corrected.h"
 
-#include "core/hal/board_config.h"
-namespace TDeckOS {
-namespace Communication {
+// ===== GLOBAL LORA MANAGER INSTANCE =====
+LoRaManager* g_lora_manager = nullptr;
 
-// Static instance for ISR
-LoRaManager* LoRaManager::s_instance = nullptr;
+// ===== LORA MANAGER IMPLEMENTATION =====
 
-LoRaManager::LoRaManager()
-    : m_radio(nullptr)
-    , m_spi(nullptr)
-    , m_initialized(false)
-    , m_currentMode(LoRaMode::IDLE)
-    , m_transmitCallback(nullptr)
-    , m_receiveCallback(nullptr)
-    , m_stats{}
-    , m_initTime(0)
-    , m_taskHandle(nullptr)
-    , m_eventQueue(nullptr)
-    , m_mutex(nullptr)
-    , m_transmittedFlag(false)
-    , m_receivedFlag(false)
-{
-    s_instance = this;
+LoRaManager::LoRaManager() : radio_(nullptr), initialized_(false),
+                             node_id_(0), sequence_counter_(0),
+                             transmitting_(false), receiving_(false),
+                             last_rssi_(0), last_snr_(0.0f), packet_count_(0),
+                             packet_received_(false) {
+    
+    // Generate unique node ID
+    node_id_ = generateNodeId();
 }
 
 LoRaManager::~LoRaManager() {
-    deinitialize();
-    s_instance = nullptr;
+    if (initialized_) {
+        cleanup();
+    }
+    
+    if (radio_) {
+        delete radio_;
+        radio_ = nullptr;
+    }
 }
 
-bool LoRaManager::initialize(const LoRaConfig& config) {
-    if (m_initialized) {
-        Logger::warning("LoRa", "Already initialized");
+bool LoRaManager::initialize() {
+    if (initialized_) {
         return true;
     }
-
-    Logger::info("LoRa", "Initializing LoRa manager...");
     
-    // Store configuration
-    m_config = config;
-    m_initTime = millis();
+    logInfo("LORA", "Initializing LoRa manager");
     
-    // Create mutex
-    m_mutex = xSemaphoreCreateMutex();
-    if (!m_mutex) {
-        Logger::error("LoRa", "Failed to create mutex");
+    // Initialize hardware
+    if (!initHardware()) {
+        logError("LORA", "Failed to initialize LoRa hardware");
         return false;
     }
     
-    // Create event queue
-    m_eventQueue = xQueueCreate(10, sizeof(uint32_t));
-    if (!m_eventQueue) {
-        Logger::error("LoRa", "Failed to create event queue");
-        vSemaphoreDelete(m_mutex);
-        return false;
-    }
-    
-    // Enable LoRa module
-    pinMode(BOARD_LORA_CS, OUTPUT); // Using CS as EN for this example
-    digitalWrite(BOARD_LORA_CS, HIGH);
-    delay(100);
-    
-    // Initialize SPI
-    m_spi = &SPI;
-    m_spi->begin(BOARD_LORA_SCK, BOARD_LORA_MISO, BOARD_LORA_MOSI, BOARD_LORA_CS);
-    
-    // Create radio instance
-    m_radio = new SX1262(new Module(BOARD_LORA_CS, BOARD_LORA_DIO1, BOARD_LORA_RST, BOARD_LORA_BUSY));
-    
-    // Initialize radio
-    Logger::info("LoRa", "Initializing SX1262 radio...");
-    int state = m_radio->begin(m_config.frequency);
-    if (state != RADIOLIB_ERR_NONE) {
-        Logger::error("LoRa", "Failed to initialize radio, code: " + String(state));
-        delete m_radio;
-        m_radio = nullptr;
-        vQueueDelete(m_eventQueue);
-        vSemaphoreDelete(m_mutex);
-        return false;
-    }
-    
-    // Configure radio parameters
+    // Configure radio
     if (!configureRadio()) {
-        Logger::error("LoRa", "Failed to configure radio");
-        delete m_radio;
-        m_radio = nullptr;
-        vQueueDelete(m_eventQueue);
-        vSemaphoreDelete(m_mutex);
+        logError("LORA", "Failed to configure LoRa radio");
         return false;
     }
     
-    // Create LoRa task
-    BaseType_t result = xTaskCreate(
-        loraTask,
-        "LoRaTask",
-        4096,
-        this,
-        LORA_TASK_PRIORITY,
-        &m_taskHandle
-    );
+    initialized_ = true;
     
-    if (result != pdPASS) {
-        Logger::error("LoRa", "Failed to create LoRa task");
-        delete m_radio;
-        m_radio = nullptr;
-        vQueueDelete(m_eventQueue);
-        vSemaphoreDelete(m_mutex);
-        return false;
-    }
-    
-    m_initialized = true;
-    m_currentMode = LoRaMode::IDLE;
-    
-    // Reset statistics
-    resetStats();
-    
-    Logger::info("LoRa", "LoRa manager initialized successfully");
+    logInfo("LORA", "LoRa manager initialized successfully. Node ID: " + String(node_id_, HEX));
     return true;
 }
 
-void LoRaManager::deinitialize() {
-    if (!m_initialized) {
+void LoRaManager::cleanup() {
+    if (!initialized_) {
         return;
     }
     
-    Logger::info("LoRa", "Deinitializing LoRa manager...");
+    logInfo("LORA", "Cleaning up LoRa manager");
     
-    // Stop task
-    if (m_taskHandle) {
-        vTaskDelete(m_taskHandle);
-        m_taskHandle = nullptr;
+    // Stop radio operations
+    if (radio_) {
+        radio_->standby();
     }
     
-    // Disable interrupts
-    disableInterrupts();
-    
-    // Put radio to sleep
-    if (m_radio) {
-        m_radio->sleep();
-        delete m_radio;
-        m_radio = nullptr;
-    }
-    
-    // Disable LoRa module
-    digitalWrite(BOARD_LORA_CS, LOW);
-    
-    // Clean up FreeRTOS objects
-    if (m_eventQueue) {
-        vQueueDelete(m_eventQueue);
-        m_eventQueue = nullptr;
-    }
-    
-    if (m_mutex) {
-        vSemaphoreDelete(m_mutex);
-        m_mutex = nullptr;
-    }
-    
-    m_initialized = false;
-    m_currentMode = LoRaMode::IDLE;
-    
-    Logger::info("LoRa", "LoRa manager deinitialized");
+    initialized_ = false;
 }
 
-bool LoRaManager::setMode(LoRaMode mode) {
-    if (!m_initialized) {
-        Logger::error("LoRa", "Not initialized");
+bool LoRaManager::initHardware() {
+    // Create radio object
+    radio_ = new SX1262(new Module(BOARD_LORA_CS, BOARD_LORA_DIO1, BOARD_LORA_RST, BOARD_LORA_BUSY));
+    if (!radio_) {
+        logError("LORA", "Failed to create SX1262 radio object");
         return false;
     }
     
-    if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
-        Logger::error("LoRa", "Failed to acquire mutex");
+    // Initialize SPI for LoRa
+    SPI.begin(BOARD_SPI_SCK, BOARD_SPI_MISO, BOARD_SPI_MOSI);
+    
+    // Initialize radio
+    int state = radio_->begin();
+    if (state != RADIOLIB_ERR_NONE) {
+        logError("LORA", "Failed to initialize SX1262. Error: " + String(state));
         return false;
     }
     
-    bool success = true;
-    
-    switch (mode) {
-        case LoRaMode::IDLE:
-            disableInterrupts();
-            m_radio->standby();
-            break;
-            
-        case LoRaMode::TRANSMIT:
-            // Mode will be set when transmit is called
-            break;
-            
-        case LoRaMode::RECEIVE:
-            enableInterrupts();
-            m_radio->setPacketReceivedAction(receiveISR);
-            if (m_radio->startReceive() != RADIOLIB_ERR_NONE) {
-                success = false;
-            }
-            break;
-            
-        case LoRaMode::SLEEP:
-            disableInterrupts();
-            m_radio->sleep();
-            break;
-            
-        default:
-            success = false;
-            break;
-    }
-    
-    if (success) {
-        m_currentMode = mode;
-        Logger::debug("LoRa", "Mode changed to " + String(static_cast<int>(mode)));
-    }
-    
-    xSemaphoreGive(m_mutex);
-    return success;
-}
-
-bool LoRaManager::transmit(const uint8_t* data, size_t length, LoRaTransmitCallback callback) {
-    if (!m_initialized) {
-        Logger::error("LoRa", "Not initialized");
-        return false;
-    }
-    
-    if (!data || length == 0 || length > 255) {
-        Logger::error("LoRa", "Invalid data or length");
-        return false;
-    }
-    
-    if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
-        Logger::error("LoRa", "Failed to acquire mutex for transmission");
-        return false;
-    }
-    
-    m_transmitCallback = callback;
-    m_transmittedFlag = false;
-    
-    // Set transmit interrupt
-    m_radio->setPacketSentAction(transmitISR);
-    
-    // Start transmission
-    int state = m_radio->startTransmit(const_cast<uint8_t*>(data), length);
-    
-    if (state == RADIOLIB_ERR_NONE) {
-        m_currentMode = LoRaMode::TRANSMIT;
-        Logger::debug("LoRa", "Started transmission of " + String(length) + " bytes");
-        xSemaphoreGive(m_mutex);
-        return true;
-    } else {
-        Logger::error("LoRa", "Failed to start transmission, code: " + String(state));
-        m_transmitCallback = nullptr;
-        xSemaphoreGive(m_mutex);
-        return false;
-    }
-}
-
-bool LoRaManager::transmit(const String& message, LoRaTransmitCallback callback) {
-    return transmit(reinterpret_cast<const uint8_t*>(message.c_str()), message.length(), callback);
-}
-
-bool LoRaManager::startReceive(LoRaReceiveCallback callback) {
-    if (!m_initialized) {
-        Logger::error("LoRa", "Not initialized");
-        return false;
-    }
-    
-    m_receiveCallback = callback;
-    return setMode(LoRaMode::RECEIVE);
-}
-
-void LoRaManager::stopReceive() {
-    if (m_currentMode == LoRaMode::RECEIVE) {
-        setMode(LoRaMode::IDLE);
-        m_receiveCallback = nullptr;
-    }
-}
-
-bool LoRaManager::sleep() {
-    return setMode(LoRaMode::SLEEP);
-}
-
-bool LoRaManager::wakeup() {
-    return setMode(LoRaMode::IDLE);
-}
-
-bool LoRaManager::updateConfig(const LoRaConfig& config) {
-    if (!m_initialized) {
-        Logger::error("LoRa", "Not initialized");
-        return false;
-    }
-    
-    if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
-        Logger::error("LoRa", "Failed to acquire mutex");
-        return false;
-    }
-    
-    LoRaMode oldMode = m_currentMode;
-    setMode(LoRaMode::IDLE);
-    
-    m_config = config;
-    bool success = configureRadio();
-    
-    if (success) {
-        Logger::info("LoRa", "Configuration updated successfully");
-        setMode(oldMode);
-    } else {
-        Logger::error("LoRa", "Failed to update configuration");
-    }
-    
-    xSemaphoreGive(m_mutex);
-    return success;
-}
-
-LoRaStats LoRaManager::getStats() const {
-    if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        m_stats.uptime = millis() - m_initTime;
-        LoRaStats stats = m_stats;
-        xSemaphoreGive(m_mutex);
-        return stats;
-    }
-    return LoRaStats{};
-}
-
-void LoRaManager::resetStats() {
-    if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        m_stats = LoRaStats{};
-        m_initTime = millis();
-        xSemaphoreGive(m_mutex);
-        Logger::info("LoRa", "Statistics reset");
-    }
-}
-
-int16_t LoRaManager::getLastRssi() const {
-    if (m_initialized && m_radio) {
-        return m_radio->getRSSI();
-    }
-    return 0;
-}
-
-float LoRaManager::getLastSnr() const {
-    if (m_initialized && m_radio) {
-        return m_radio->getSNR();
-    }
-    return 0.0f;
-}
-
-float LoRaManager::getFrequencyError() const {
-    if (m_initialized && m_radio) {
-        return m_radio->getFrequencyError();
-    }
-    return 0.0f;
-}
-
-bool LoRaManager::isBusy() const {
-    if (m_initialized) {
-        return digitalRead(BOARD_LORA_BUSY) == HIGH;
-    }
-    return false;
-}
-
-void LoRaManager::process() {
-    // This method can be called from main loop for additional processing
-    // Most work is done in the FreeRTOS task
+    logInfo("LORA", "LoRa hardware initialized");
+    return true;
 }
 
 bool LoRaManager::configureRadio() {
-    if (!m_radio) {
+    if (!radio_) {
         return false;
     }
     
-    Logger::info("LoRa", "Configuring radio parameters...");
-    
     // Set frequency
-    if (m_radio->setFrequency(m_config.frequency) == RADIOLIB_ERR_INVALID_FREQUENCY) {
-        Logger::error("LoRa", "Invalid frequency: " + String(m_config.frequency) + " MHz");
+    int state = radio_->setFrequency(config_.frequency);
+    if (state != RADIOLIB_ERR_NONE) {
+        logError("LORA", "Failed to set frequency. Error: " + String(state));
         return false;
     }
     
     // Set bandwidth
-    if (m_radio->setBandwidth(m_config.bandwidth) == RADIOLIB_ERR_INVALID_BANDWIDTH) {
-        Logger::error("LoRa", "Invalid bandwidth: " + String(m_config.bandwidth) + " kHz");
+    state = radio_->setBandwidth(config_.bandwidth);
+    if (state != RADIOLIB_ERR_NONE) {
+        logError("LORA", "Failed to set bandwidth. Error: " + String(state));
         return false;
     }
     
     // Set spreading factor
-    if (m_radio->setSpreadingFactor(m_config.spreadingFactor) == RADIOLIB_ERR_INVALID_SPREADING_FACTOR) {
-        Logger::error("LoRa", "Invalid spreading factor: " + String(m_config.spreadingFactor));
+    state = radio_->setSpreadingFactor(config_.spreading_factor);
+    if (state != RADIOLIB_ERR_NONE) {
+        logError("LORA", "Failed to set spreading factor. Error: " + String(state));
         return false;
     }
     
     // Set coding rate
-    if (m_radio->setCodingRate(m_config.codingRate) == RADIOLIB_ERR_INVALID_CODING_RATE) {
-        Logger::error("LoRa", "Invalid coding rate: " + String(m_config.codingRate));
-        return false;
-    }
-    
-    // Set sync word
-    if (m_radio->setSyncWord(m_config.syncWord) != RADIOLIB_ERR_NONE) {
-        Logger::error("LoRa", "Failed to set sync word: 0x" + String(m_config.syncWord, HEX));
+    state = radio_->setCodingRate(config_.coding_rate);
+    if (state != RADIOLIB_ERR_NONE) {
+        logError("LORA", "Failed to set coding rate. Error: " + String(state));
         return false;
     }
     
     // Set output power
-    if (m_radio->setOutputPower(m_config.outputPower) == RADIOLIB_ERR_INVALID_OUTPUT_POWER) {
-        Logger::error("LoRa", "Invalid output power: " + String(m_config.outputPower) + " dBm");
-        return false;
-    }
-    
-    // Set current limit
-    if (m_radio->setCurrentLimit(m_config.currentLimit) == RADIOLIB_ERR_INVALID_CURRENT_LIMIT) {
-        Logger::error("LoRa", "Invalid current limit: " + String(m_config.currentLimit) + " mA");
+    state = radio_->setOutputPower(config_.output_power);
+    if (state != RADIOLIB_ERR_NONE) {
+        logError("LORA", "Failed to set output power. Error: " + String(state));
         return false;
     }
     
     // Set preamble length
-    if (m_radio->setPreambleLength(m_config.preambleLength) == RADIOLIB_ERR_INVALID_PREAMBLE_LENGTH) {
-        Logger::error("LoRa", "Invalid preamble length: " + String(m_config.preambleLength));
+    state = radio_->setPreambleLength(config_.preamble_length);
+    if (state != RADIOLIB_ERR_NONE) {
+        logError("LORA", "Failed to set preamble length. Error: " + String(state));
         return false;
     }
     
     // Set CRC
-    if (m_radio->setCRC(m_config.crcEnabled) == RADIOLIB_ERR_INVALID_CRC_CONFIGURATION) {
-        Logger::error("LoRa", "Invalid CRC configuration");
+    state = radio_->setCRC(config_.crc_enabled);
+    if (state != RADIOLIB_ERR_NONE) {
+        logError("LORA", "Failed to set CRC. Error: " + String(state));
         return false;
     }
     
-    // Set TCXO voltage
-    if (m_radio->setTCXO(m_config.tcxoVoltage) == RADIOLIB_ERR_INVALID_TCXO_VOLTAGE) {
-        Logger::error("LoRa", "Invalid TCXO voltage: " + String(m_config.tcxoVoltage) + " V");
+    // Set sync word
+    state = radio_->setSyncWord(config_.sync_word);
+    if (state != RADIOLIB_ERR_NONE) {
+        logError("LORA", "Failed to set sync word. Error: " + String(state));
         return false;
     }
     
-    // Set DIO2 as RF switch
-    if (m_radio->setDio2AsRfSwitch() != RADIOLIB_ERR_NONE) {
-        Logger::error("LoRa", "Failed to set DIO2 as RF switch");
+    logInfo("LORA", "Radio configured successfully");
+    return true;
+}
+
+void LoRaManager::process() {
+    if (!initialized_ || !radio_) {
+        return;
+    }
+    
+    // Handle reception
+    handleReceive();
+    
+    // Handle transmission
+    handleTransmit();
+    
+    // Update statistics
+    updateStatistics();
+}
+
+void LoRaManager::handleReceive() {
+    if (receiving_) {
+        return;
+    }
+    
+    // Start receiving
+    int state = radio_->startReceive();
+    if (state == RADIOLIB_ERR_NONE) {
+        receiving_ = true;
+        logDebug("LORA", "Started receiving");
+    }
+    
+    // Check if packet received
+    if (radio_->available()) {
+        LoRaPacket packet;
+        if (receivePacket(packet)) {
+            if (validatePacket(packet)) {
+                received_packet_ = packet;
+                packet_received_ = true;
+                packet_count_++;
+                
+                logInfo("LORA", "Received packet from " + String(packet.source_id[0], HEX) + 
+                        " type: " + String(packet.type) + " length: " + String(packet.length));
+            } else {
+                logWarn("LORA", "Received invalid packet");
+            }
+        }
+        
+        // Stop receiving
+        radio_->standby();
+        receiving_ = false;
+    }
+}
+
+void LoRaManager::handleTransmit() {
+    if (transmitting_) {
+        // Check if transmission is complete
+        if (radio_->isTransmitting()) {
+            return;
+        }
+        
+        // Transmission complete
+        transmitting_ = false;
+        logDebug("LORA", "Transmission complete");
+    }
+}
+
+bool LoRaManager::sendPacket(const LoRaPacket& packet) {
+    if (!radio_) {
         return false;
     }
     
-    Logger::info("LoRa", "Radio configured successfully");
-    Logger::info("LoRa", "  Frequency: " + String(m_config.frequency) + " MHz");
-    Logger::info("LoRa", "  Bandwidth: " + String(m_config.bandwidth) + " kHz");
-    Logger::info("LoRa", "  SF: " + String(m_config.spreadingFactor) + ", CR: " + String(m_config.codingRate));
-    Logger::info("LoRa", "  Power: " + String(m_config.outputPower) + " dBm");
+    // Prepare packet data
+    uint8_t packet_data[LORA_PACKET_SIZE_MAX];
+    uint8_t data_length = 0;
+    
+    // Packet header
+    packet_data[data_length++] = packet.type;
+    
+    // Source ID
+    for (int i = 0; i < 4; i++) {
+        packet_data[data_length++] = packet.source_id[i];
+    }
+    
+    // Destination ID
+    for (int i = 0; i < 4; i++) {
+        packet_data[data_length++] = packet.destination_id[i];
+    }
+    
+    // Sequence number
+    packet_data[data_length++] = packet.sequence;
+    
+    // Data length
+    packet_data[data_length++] = packet.length;
+    
+    // Data
+    for (int i = 0; i < packet.length; i++) {
+        packet_data[data_length++] = packet.data[i];
+    }
+    
+    // Checksum
+    packet_data[data_length++] = packet.checksum;
+    
+    // Transmit packet
+    int state = radio_->transmit(packet_data, data_length);
+    if (state != RADIOLIB_ERR_NONE) {
+        logError("LORA", "Failed to transmit packet. Error: " + String(state));
+        return false;
+    }
+    
+    transmitting_ = true;
+    logDebug("LORA", "Started transmission, length: " + String(data_length));
+    return true;
+}
+
+bool LoRaManager::receivePacket(LoRaPacket& packet) {
+    if (!radio_) {
+        return false;
+    }
+    
+    // Get packet data
+    uint8_t packet_data[LORA_PACKET_SIZE_MAX];
+    int state = radio_->readData(packet_data, LORA_PACKET_SIZE_MAX);
+    if (state < 0) {
+        logError("LORA", "Failed to read packet data. Error: " + String(state));
+        return false;
+    }
+    
+    if (state < 12) { // Minimum packet size
+        logWarn("LORA", "Received packet too small: " + String(state));
+        return false;
+    }
+    
+    // Parse packet
+    uint8_t index = 0;
+    
+    // Packet type
+    packet.type = packet_data[index++];
+    
+    // Source ID
+    for (int i = 0; i < 4; i++) {
+        packet.source_id[i] = packet_data[index++];
+    }
+    
+    // Destination ID
+    for (int i = 0; i < 4; i++) {
+        packet.destination_id[i] = packet_data[index++];
+    }
+    
+    // Sequence number
+    packet.sequence = packet_data[index++];
+    
+    // Data length
+    packet.length = packet_data[index++];
+    
+    // Data
+    for (int i = 0; i < packet.length && index < state; i++) {
+        packet.data[i] = packet_data[index++];
+    }
+    
+    // Checksum
+    if (index < state) {
+        packet.checksum = packet_data[index++];
+    }
     
     return true;
 }
 
-void LoRaManager::enableInterrupts() {
-    // Interrupts are handled by RadioLib
-}
-
-void LoRaManager::disableInterrupts() {
-    if (m_radio) {
-        m_radio->clearPacketSentAction();
-        m_radio->clearPacketReceivedAction();
+void LoRaManager::updateStatistics() {
+    if (radio_) {
+        last_rssi_ = radio_->getRSSI();
+        last_snr_ = radio_->getSNR();
     }
 }
 
-void IRAM_ATTR LoRaManager::transmitISR() {
-    if (s_instance) {
-        s_instance->m_transmittedFlag = true;
-        uint32_t event = 1; // Transmit event
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-        xQueueSendFromISR(s_instance->m_eventQueue, &event, &xHigherPriorityTaskWoken);
-        if (xHigherPriorityTaskWoken) {
-            portYIELD_FROM_ISR();
-        }
-    }
-}
-
-void IRAM_ATTR LoRaManager::receiveISR() {
-    if (s_instance) {
-        s_instance->m_receivedFlag = true;
-        uint32_t event = 2; // Receive event
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-        xQueueSendFromISR(s_instance->m_eventQueue, &event, &xHigherPriorityTaskWoken);
-        if (xHigherPriorityTaskWoken) {
-            portYIELD_FROM_ISR();
-        }
-    }
-}
-
-void LoRaManager::loraTask(void* parameter) {
-    LoRaManager* manager = static_cast<LoRaManager*>(parameter);
-    uint32_t event;
+bool LoRaManager::setConfig(const LoRaConfig& config) {
+    config_ = config;
     
-    Logger::info("LoRa", "LoRa task started");
-    
-    while (true) {
-        if (xQueueReceive(manager->m_eventQueue, &event, pdMS_TO_TICKS(1000)) == pdTRUE) {
-            switch (event) {
-                case 1: // Transmit complete
-                    manager->handleTransmitComplete();
-                    break;
-                case 2: // Receive complete
-                    manager->handleReceiveComplete();
-                    break;
-                default:
-                    break;
-            }
-        }
-        
-        // Update statistics periodically
-        manager->updateStats();
-    }
-}
-
-void LoRaManager::handleTransmitComplete() {
-    if (!m_transmittedFlag) {
-        return;
+    if (initialized_) {
+        return configureRadio();
     }
     
-    m_transmittedFlag = false;
-    
-    if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        // Finish transmission
-        int state = m_radio->finishTransmit();
-        bool success = (state == RADIOLIB_ERR_NONE);
-        
-        if (success) {
-            m_stats.packetsTransmitted++;
-            Logger::debug("LoRa", "Transmission completed successfully");
-        } else {
-            m_stats.transmissionErrors++;
-            Logger::error("LoRa", "Transmission failed, code: " + String(state));
-        }
-        
-        // Call callback if set
-        if (m_transmitCallback) {
-            m_transmitCallback(success, state);
-            m_transmitCallback = nullptr;
-        }
-        
-        // Return to idle mode
-        m_currentMode = LoRaMode::IDLE;
-        
-        xSemaphoreGive(m_mutex);
-    }
+    return true;
 }
 
-void LoRaManager::handleReceiveComplete() {
-    if (!m_receivedFlag) {
-        return;
-    }
-    
-    m_receivedFlag = false;
-    
-    if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        // Read received data
-        String receivedData;
-        int state = m_radio->readData(receivedData);
-        
-        if (state == RADIOLIB_ERR_NONE) {
-            // Create packet structure
-            LoRaPacket packet;
-            packet.data = reinterpret_cast<uint8_t*>(const_cast<char*>(receivedData.c_str()));
-            packet.length = receivedData.length();
-            packet.rssi = m_radio->getRSSI();
-            packet.snr = m_radio->getSNR();
-            packet.frequencyError = m_radio->getFrequencyError();
-            packet.timestamp = millis();
-            packet.isValid = true;
-            
-            m_stats.packetsReceived++;
-            m_stats.lastRssi = packet.rssi;
-            m_stats.lastSnr = packet.snr;
-            
-            Logger::debug("LoRa", "Received packet: " + String(packet.length) + " bytes, RSSI: " + String(packet.rssi) + " dBm, SNR: " + String(packet.snr) + " dB");
-            
-            // Call callback if set
-            if (m_receiveCallback) {
-                m_receiveCallback(packet);
-            }
-            
-        } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
-            m_stats.crcErrors++;
-            Logger::warning("LoRa", "CRC error in received packet");
-        } else {
-            m_stats.receptionErrors++;
-            Logger::error("LoRa", "Reception failed, code: " + String(state));
-        }
-        
-        // Continue receiving if still in receive mode
-        if (m_currentMode == LoRaMode::RECEIVE) {
-            m_radio->startReceive();
-        }
-        
-        xSemaphoreGive(m_mutex);
-    }
+LoRaConfig LoRaManager::getConfig() const {
+    return config_;
 }
 
-void LoRaManager::updateStats() {
-    // Update uptime and other periodic statistics
-    if (xSemaphoreTake(m_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        m_stats.uptime = millis() - m_initTime;
-        xSemaphoreGive(m_mutex);
+bool LoRaManager::setFrequency(uint32_t frequency) {
+    config_.frequency = frequency;
+    
+    if (initialized_ && radio_) {
+        int state = radio_->setFrequency(frequency);
+        if (state != RADIOLIB_ERR_NONE) {
+            logError("LORA", "Failed to set frequency. Error: " + String(state));
+            return false;
+        }
+        logInfo("LORA", "Frequency set to: " + String(frequency));
     }
+    
+    return true;
 }
 
-} // namespace Communication
-} // namespace TDeckOS
+bool LoRaManager::setBandwidth(uint32_t bandwidth) {
+    config_.bandwidth = bandwidth;
+    
+    if (initialized_ && radio_) {
+        int state = radio_->setBandwidth(bandwidth);
+        if (state != RADIOLIB_ERR_NONE) {
+            logError("LORA", "Failed to set bandwidth. Error: " + String(state));
+            return false;
+        }
+        logInfo("LORA", "Bandwidth set to: " + String(bandwidth));
+    }
+    
+    return true;
+}
+
+bool LoRaManager::setSpreadingFactor(uint8_t sf) {
+    config_.spreading_factor = sf;
+    
+    if (initialized_ && radio_) {
+        int state = radio_->setSpreadingFactor(sf);
+        if (state != RADIOLIB_ERR_NONE) {
+            logError("LORA", "Failed to set spreading factor. Error: " + String(state));
+            return false;
+        }
+        logInfo("LORA", "Spreading factor set to: " + String(sf));
+    }
+    
+    return true;
+}
+
+bool LoRaManager::setCodingRate(uint8_t cr) {
+    config_.coding_rate = cr;
+    
+    if (initialized_ && radio_) {
+        int state = radio_->setCodingRate(cr);
+        if (state != RADIOLIB_ERR_NONE) {
+            logError("LORA", "Failed to set coding rate. Error: " + String(state));
+            return false;
+        }
+        logInfo("LORA", "Coding rate set to: " + String(cr));
+    }
+    
+    return true;
+}
+
+bool LoRaManager::setOutputPower(int8_t power) {
+    config_.output_power = power;
+    
+    if (initialized_ && radio_) {
+        int state = radio_->setOutputPower(power);
+        if (state != RADIOLIB_ERR_NONE) {
+            logError("LORA", "Failed to set output power. Error: " + String(state));
+            return false;
+        }
+        logInfo("LORA", "Output power set to: " + String(power) + " dBm");
+    }
+    
+    return true;
+}
+
+bool LoRaManager::setPreambleLength(uint8_t length) {
+    config_.preamble_length = length;
+    
+    if (initialized_ && radio_) {
+        int state = radio_->setPreambleLength(length);
+        if (state != RADIOLIB_ERR_NONE) {
+            logError("LORA", "Failed to set preamble length. Error: " + String(state));
+            return false;
+        }
+        logInfo("LORA", "Preamble length set to: " + String(length));
+    }
+    
+    return true;
+}
+
+bool LoRaManager::setCRC(bool enabled) {
+    config_.crc_enabled = enabled;
+    
+    if (initialized_ && radio_) {
+        int state = radio_->setCRC(enabled);
+        if (state != RADIOLIB_ERR_NONE) {
+            logError("LORA", "Failed to set CRC. Error: " + String(state));
+            return false;
+        }
+        logInfo("LORA", "CRC " + String(enabled ? "enabled" : "disabled"));
+    }
+    
+    return true;
+}
+
+bool LoRaManager::setSyncWord(uint8_t sync_word) {
+    config_.sync_word = sync_word;
+    
+    if (initialized_ && radio_) {
+        int state = radio_->setSyncWord(sync_word);
+        if (state != RADIOLIB_ERR_NONE) {
+            logError("LORA", "Failed to set sync word. Error: " + String(state));
+            return false;
+        }
+        logInfo("LORA", "Sync word set to: 0x" + String(sync_word, HEX));
+    }
+    
+    return true;
+}
+
+bool LoRaManager::transmit(const LoRaPacket& packet) {
+    if (!initialized_ || transmitting_) {
+        return false;
+    }
+    
+    return sendPacket(packet);
+}
+
+bool LoRaManager::transmitData(const uint8_t* data, uint8_t length, uint32_t destination_id) {
+    if (length > LORA_PACKET_SIZE_MAX - 12) {
+        logError("LORA", "Data too large for packet");
+        return false;
+    }
+    
+    LoRaPacket packet;
+    packet.type = (uint8_t)LoRaPacketType::DATA;
+    packet.sequence = getNextSequence();
+    packet.length = length;
+    
+    // Set source ID
+    for (int i = 0; i < 4; i++) {
+        packet.source_id[i] = (node_id_ >> (8 * (3 - i))) & 0xFF;
+    }
+    
+    // Set destination ID
+    for (int i = 0; i < 4; i++) {
+        packet.destination_id[i] = (destination_id >> (8 * (3 - i))) & 0xFF;
+    }
+    
+    // Copy data
+    memcpy(packet.data, data, length);
+    
+    // Calculate checksum
+    packet.checksum = calculateChecksum(packet);
+    
+    return transmit(packet);
+}
+
+bool LoRaManager::transmitString(const String& message, uint32_t destination_id) {
+    return transmitData((const uint8_t*)message.c_str(), message.length(), destination_id);
+}
+
+bool LoRaManager::broadcast(const String& message) {
+    return transmitString(message, 0xFFFFFFFF); // Broadcast to all nodes
+}
+
+bool LoRaManager::hasReceived() const {
+    return packet_received_;
+}
+
+LoRaPacket LoRaManager::getReceivedPacket() {
+    LoRaPacket packet = received_packet_;
+    packet_received_ = false;
+    return packet;
+}
+
+void LoRaManager::clearReceived() {
+    packet_received_ = false;
+}
+
+bool LoRaManager::isInitialized() const {
+    return initialized_;
+}
+
+bool LoRaManager::isTransmitting() const {
+    return transmitting_;
+}
+
+bool LoRaManager::isReceiving() const {
+    return receiving_;
+}
+
+int16_t LoRaManager::getRSSI() const {
+    return last_rssi_;
+}
+
+float LoRaManager::getSNR() const {
+    return last_snr_;
+}
+
+uint32_t LoRaManager::getPacketCount() const {
+    return packet_count_;
+}
+
+String LoRaManager::getStatus() const {
+    DynamicJsonDocument doc(1024);
+    
+    doc["initialized"] = initialized_;
+    doc["transmitting"] = transmitting_;
+    doc["receiving"] = receiving_;
+    doc["packet_count"] = packet_count_;
+    doc["node_id"] = node_id_;
+    doc["rssi"] = last_rssi_;
+    doc["snr"] = last_snr_;
+    
+    JsonObject config = doc.createNestedObject("config");
+    config["frequency"] = config_.frequency;
+    config["bandwidth"] = config_.bandwidth;
+    config["spreading_factor"] = config_.spreading_factor;
+    config["coding_rate"] = config_.coding_rate;
+    config["output_power"] = config_.output_power;
+    config["preamble_length"] = config_.preamble_length;
+    config["crc_enabled"] = config_.crc_enabled;
+    config["sync_word"] = config_.sync_word;
+    
+    String output;
+    serializeJson(doc, output);
+    return output;
+}
+
+uint32_t LoRaManager::getNodeId() const {
+    return node_id_;
+}
+
+void LoRaManager::setNodeId(uint32_t node_id) {
+    node_id_ = node_id;
+    logInfo("LORA", "Node ID set to: " + String(node_id, HEX));
+}
+
+uint8_t LoRaManager::getNextSequence() {
+    return ++sequence_counter_;
+}
+
+bool LoRaManager::validatePacket(const LoRaPacket& packet) const {
+    // Check checksum
+    uint8_t calculated_checksum = calculateChecksum(packet);
+    if (calculated_checksum != packet.checksum) {
+        return false;
+    }
+    
+    // Check if packet is for this node or broadcast
+    uint32_t dest_id = 0;
+    for (int i = 0; i < 4; i++) {
+        dest_id = (dest_id << 8) | packet.destination_id[i];
+    }
+    
+    return (dest_id == node_id_ || dest_id == 0xFFFFFFFF);
+}
+
+uint8_t LoRaManager::calculateChecksum(const LoRaPacket& packet) const {
+    uint8_t checksum = 0;
+    
+    checksum ^= packet.type;
+    checksum ^= packet.sequence;
+    checksum ^= packet.length;
+    
+    for (int i = 0; i < 4; i++) {
+        checksum ^= packet.source_id[i];
+        checksum ^= packet.destination_id[i];
+    }
+    
+    for (int i = 0; i < packet.length; i++) {
+        checksum ^= packet.data[i];
+    }
+    
+    return checksum;
+}
+
+// ===== GLOBAL LORA MANAGER FUNCTIONS =====
+
+bool initializeLoRaManager() {
+    if (g_lora_manager) {
+        return true;
+    }
+    
+    g_lora_manager = new LoRaManager();
+    if (!g_lora_manager) {
+        return false;
+    }
+    
+    return g_lora_manager->initialize();
+}
+
+LoRaManager* getLoRaManager() {
+    return g_lora_manager;
+}
+
+// ===== LORA UTILITY FUNCTIONS =====
+
+uint32_t generateNodeId() {
+    // Generate a pseudo-random node ID based on hardware
+    uint32_t id = 0;
+    
+    // Use ESP32 unique ID if available
+    uint64_t chip_id = ESP.getEfuseMac();
+    id = (uint32_t)(chip_id & 0xFFFFFFFF);
+    
+    // Add some randomness
+    id ^= (uint32_t)millis();
+    id ^= (uint32_t)random(0xFFFFFFFF);
+    
+    return id;
+}
+
+String frequencyToString(uint32_t frequency) {
+    return String(frequency / 1000000.0, 1) + " MHz";
+}
+
+uint32_t stringToFrequency(const String& freq_string) {
+    // Parse frequency string like "915.0 MHz"
+    String clean = freq_string;
+    clean.replace(" MHz", "");
+    clean.replace("MHz", "");
+    clean.trim();
+    
+    float freq_mhz = clean.toFloat();
+    return (uint32_t)(freq_mhz * 1000000);
+}
+
+String spreadingFactorToString(uint8_t sf) {
+    return "SF" + String(sf);
+}
+
+uint8_t stringToSpreadingFactor(const String& sf_string) {
+    // Parse spreading factor string like "SF7"
+    String clean = sf_string;
+    clean.replace("SF", "");
+    clean.trim();
+    
+    return clean.toInt();
+} 

@@ -1,8 +1,9 @@
 /**
  * @file launcher.h
- * @brief T-Deck-Pro Launcher - Main OS interface
+ * @brief T-Deck-Pro Launcher - Main UI and Application Grid
  * @author T-Deck-Pro OS Team
  * @date 2025
+ * @note Handles main UI with app grid and system status
  */
 
 #ifndef LAUNCHER_H
@@ -11,49 +12,57 @@
 #include <Arduino.h>
 #include <lvgl.h>
 #include <vector>
-#include "config/os_config_corrected.h"
+#include <map>
 
-// Forward declaration
-class UILauncher;
+#include "hal/board_config_corrected.h"
+
+// ===== LAUNCHER STATES =====
+enum class LauncherState {
+    INIT,
+    LOADING,
+    READY,
+    RUNNING_APP,
+    ERROR
+};
+
+// ===== APP TYPES =====
+enum class AppType {
+    SYSTEM,     // Built-in system apps
+    PLUGIN,     // SD card plugins
+    UTILITY     // Utility functions
+};
 
 /**
- * @brief App icon information for launcher
+ * @brief Application information
  */
-struct AppIcon {
+struct AppInfo {
     String name;
-    String display_name;
-    String icon_path;
     String description;
-    bool is_plugin;
-    bool has_notification;
-    int notification_count;
-    lv_obj_t* icon_obj;
-    lv_obj_t* label_obj;
-    lv_obj_t* badge_obj;
+    String icon;
+    AppType type;
+    bool enabled;
+    uint32_t last_used;
+    size_t memory_usage;
 };
 
 /**
  * @brief System status information
  */
 struct SystemStatus {
-    uint16_t battery_voltage;
-    int battery_percentage;
+    float battery_voltage;
+    uint8_t battery_percentage;
     bool usb_connected;
     bool wifi_connected;
     bool cellular_connected;
-    bool mqtt_connected;
-    bool tailscale_connected;
-    String wifi_ssid;
-    int wifi_signal;
-    String cellular_operator;
-    int cellular_signal;
-    float temperature;
-    uint32_t uptime;
-    uint32_t free_memory;
+    String current_time;
+    String uptime;
+    size_t free_memory;
+    size_t free_storage;
 };
 
 /**
- * @brief Main launcher interface for the simplified OS
+ * @brief Launcher for T-Deck-Pro OS
+ * @note Handles main UI with app grid and system status
  */
 class Launcher {
 public:
@@ -61,217 +70,348 @@ public:
     ~Launcher();
     
     /**
-     * @brief Initialize the launcher
+     * @brief Initialize launcher
      * @return true if successful
      */
     bool initialize();
     
     /**
-     * @brief Show the launcher interface
+     * @brief Check if launcher is initialized
+     * @return true if initialized
+     */
+    bool isInitialized() const { return initialized_; }
+    
+    /**
+     * @brief Get launcher state
+     * @return Current launcher state
+     */
+    LauncherState getState() const { return current_state_; }
+    
+    /**
+     * @brief Show launcher interface
      */
     void show();
     
     /**
-     * @brief Hide the launcher interface
+     * @brief Hide launcher interface
      */
     void hide();
     
     /**
-     * @brief Update launcher (call periodically)
+     * @brief Update launcher display
      */
     void update();
     
     /**
-     * @brief Show boot complete screen
-     * @param boot_duration Boot time in milliseconds
+     * @brief Process launcher events
      */
-    void show_boot_complete(uint32_t boot_duration);
+    void process();
     
     /**
-     * @brief Add app icon to launcher
-     * @param app_info App information
+     * @brief Add application to launcher
+     * @param app App information
      * @return true if successful
      */
-    bool add_app_icon(const AppIcon& app_info);
+    bool addApp(const AppInfo& app);
     
     /**
-     * @brief Remove app icon from launcher
-     * @param app_name App name to remove
+     * @brief Remove application from launcher
+     * @param name App name
      * @return true if successful
      */
-    bool remove_app_icon(const String& app_name);
+    bool removeApp(const String& name);
     
     /**
-     * @brief Update app notification badge
-     * @param app_name App name
-     * @param count Notification count (0 to hide badge)
+     * @brief Get application information
+     * @param name App name
+     * @return App information
+     */
+    AppInfo getApp(const String& name);
+    
+    /**
+     * @brief Get all applications
+     * @return Vector of app information
+     */
+    std::vector<AppInfo> getApps() const;
+    
+    /**
+     * @brief Launch application
+     * @param name App name
      * @return true if successful
      */
-    bool update_app_notification(const String& app_name, int count);
+    bool launchApp(const String& name);
     
     /**
-     * @brief Update system status display
-     * @param status System status information
+     * @brief Close current application
      */
-    void update_system_status(const SystemStatus& status);
+    void closeApp();
     
     /**
-     * @brief Show settings panel
+     * @brief Get current running app
+     * @return Current app name
      */
-    void show_settings();
+    String getCurrentApp() const { return current_app_; }
     
     /**
-     * @brief Show system information
+     * @brief Update system status
+     * @param status System status
      */
-    void show_system_info();
+    void updateSystemStatus(const SystemStatus& status);
     
     /**
-     * @brief Handle app launch request
-     * @param app_name App to launch
-     * @return true if launch initiated
+     * @brief Get system status
+     * @return System status
      */
-    bool launch_app(const String& app_name);
+    SystemStatus getSystemStatus() const { return system_status_; }
     
     /**
-     * @brief Check if launcher is currently visible
-     * @return true if visible
+     * @brief Set launcher theme
+     * @param theme Theme name
      */
-    bool is_visible() const;
+    void setTheme(const String& theme);
     
     /**
-     * @brief Refresh app list from SD card
+     * @brief Get current theme
+     * @return Theme name
      */
-    void refresh_app_list();
+    String getTheme() const { return current_theme_; }
     
+    /**
+     * @brief Set grid layout
+     * @param columns Number of columns
+     * @param rows Number of rows
+     */
+    void setGridLayout(uint8_t columns, uint8_t rows);
+    
+    /**
+     * @brief Get grid layout
+     * @param columns Number of columns
+     * @param rows Number of rows
+     */
+    void getGridLayout(uint8_t& columns, uint8_t& rows) const;
+    
+    /**
+     * @brief Enable/disable app categories
+     * @param system Enable system apps
+     * @param plugin Enable plugin apps
+     * @param utility Enable utility apps
+     */
+    void setAppCategories(bool system, bool plugin, bool utility);
+    
+    /**
+     * @brief Get app category settings
+     * @param system System apps enabled
+     * @param plugin Plugin apps enabled
+     * @param utility Utility apps enabled
+     */
+    void getAppCategories(bool& system, bool& plugin, bool& utility) const;
+    
+    /**
+     * @brief Show settings screen
+     */
+    void showSettings();
+    
+    /**
+     * @brief Show about screen
+     */
+    void showAbout();
+    
+    /**
+     * @brief Show system status screen
+     */
+    void showSystemStatus();
+    
+    /**
+     * @brief Handle touch input
+     * @param x Touch X coordinate
+     * @param y Touch Y coordinate
+     * @param pressed true if pressed
+     */
+    void handleTouch(uint16_t x, uint16_t y, bool pressed);
+    
+    /**
+     * @brief Handle key input
+     * @param key Key code
+     * @param pressed true if pressed
+     */
+    void handleKey(uint8_t key, bool pressed);
+    
+    /**
+     * @brief Get launcher statistics
+     * @return Statistics JSON string
+     */
+    String getStatistics();
+    
+    /**
+     * @brief Reset launcher statistics
+     */
+    void resetStatistics();
+
 private:
-    /**
-     * @brief Create the main launcher UI
-     */
-    void create_ui();
+    // ===== UI OPERATIONS =====
     
     /**
-     * @brief Create status bar
+     * @brief Initialize UI components
+     * @return true if successful
      */
-    void create_status_bar();
+    bool initUI();
+    
+    /**
+     * @brief Create main screen
+     * @return true if successful
+     */
+    bool createMainScreen();
     
     /**
      * @brief Create app grid
+     * @return true if successful
      */
-    void create_app_grid();
+    bool createAppGrid();
     
     /**
-     * @brief Create bottom navigation
+     * @brief Create status bar
+     * @return true if successful
      */
-    void create_bottom_nav();
+    bool createStatusBar();
     
     /**
-     * @brief Update status bar content
+     * @brief Create navigation bar
+     * @return true if successful
      */
-    void update_status_bar();
+    bool createNavigationBar();
     
     /**
-     * @brief Update app grid layout
+     * @brief Update app grid
      */
-    void update_app_grid();
+    void updateAppGrid();
     
     /**
-     * @brief Handle app icon click
-     * @param event LVGL event
+     * @brief Update status bar
      */
-    static void app_icon_clicked(lv_event_t* event);
+    void updateStatusBar();
     
     /**
-     * @brief Handle settings button click
-     * @param event LVGL event
+     * @brief Update navigation bar
      */
-    static void settings_clicked(lv_event_t* event);
+    void updateNavigationBar();
     
     /**
-     * @brief Handle system info button click
-     * @param event LVGL event
+     * @brief Create app button
+     * @param app App information
+     * @param index Button index
+     * @return LVGL object
      */
-    static void system_info_clicked(lv_event_t* event);
+    lv_obj_t* createAppButton(const AppInfo& app, uint8_t index);
     
     /**
-     * @brief Create app icon object
-     * @param parent Parent container
-     * @param app_info App information
-     * @param x X position
-     * @param y Y position
-     * @return Created icon object
+     * @brief Handle app button click
+     * @param app_name App name
      */
-    lv_obj_t* create_app_icon_obj(lv_obj_t* parent, const AppIcon& app_info, int x, int y);
+    void handleAppClick(const String& app_name);
     
     /**
-     * @brief Create notification badge
-     * @param parent Parent object
-     * @param count Notification count
-     * @return Created badge object
+     * @brief Set launcher state
+     * @param state New state
      */
-    lv_obj_t* create_notification_badge(lv_obj_t* parent, int count);
+    void setState(LauncherState state);
     
     /**
-     * @brief Load built-in apps
+     * @brief Log launcher event
+     * @param event Event description
      */
-    void load_builtin_apps();
+    void logEvent(const String& event);
     
     /**
-     * @brief Load plugin apps from SD card
+     * @brief Update launcher statistics
+     * @param app_launched App name launched
      */
-    void load_plugin_apps();
+    void updateStatistics(const String& app_launched);
+
+private:
+    // ===== MEMBER VARIABLES =====
+    bool initialized_;
+    LauncherState current_state_;
+    String current_app_;
+    String current_theme_;
     
-    /**
-     * @brief Get battery icon based on level and charging status
-     * @param percentage Battery percentage
-     * @param charging Is charging
-     * @return Battery icon symbol
-     */
-    String get_battery_icon(int percentage, bool charging);
+    // Applications
+    std::vector<AppInfo> apps_;
+    std::map<String, AppInfo> app_map_;
     
-    /**
-     * @brief Get signal strength icon
-     * @param signal_strength Signal strength (0-100)
-     * @return Signal icon symbol
-     */
-    String get_signal_icon(int signal_strength);
+    // System status
+    SystemStatus system_status_;
     
-    // UI state
-    bool initialized;
-    bool visible;
-    lv_obj_t* main_container;
-    lv_obj_t* status_bar;
-    lv_obj_t* app_grid;
-    lv_obj_t* bottom_nav;
+    // UI layout
+    uint8_t grid_columns_;
+    uint8_t grid_rows_;
+    bool show_system_apps_;
+    bool show_plugin_apps_;
+    bool show_utility_apps_;
     
-    // Status bar elements
-    lv_obj_t* time_label;
-    lv_obj_t* battery_label;
-    lv_obj_t* wifi_label;
-    lv_obj_t* cellular_label;
-    lv_obj_t* mqtt_label;
-    lv_obj_t* tailscale_label;
+    // LVGL objects
+    lv_obj_t* main_screen_;
+    lv_obj_t* app_grid_;
+    lv_obj_t* status_bar_;
+    lv_obj_t* nav_bar_;
+    std::vector<lv_obj_t*> app_buttons_;
     
-    // Bottom navigation elements
-    lv_obj_t* settings_btn;
-    lv_obj_t* info_btn;
-    lv_obj_t* refresh_btn;
+    // Statistics
+    uint32_t total_launches_;
+    uint32_t app_switches_;
+    uint32_t ui_updates_;
+    uint32_t last_update_time_;
     
-    // App management
-    std::vector<AppIcon> app_icons;
-    SystemStatus current_status;
-    
-    // UI launcher reference
-    UILauncher* ui_launcher;
-    
-    // Layout configuration
-    static const int ICON_SIZE = 64;
-    static const int ICON_SPACING = 20;
-    static const int ICONS_PER_ROW = 3;
-    static const int STATUS_BAR_HEIGHT = 30;
-    static const int BOTTOM_NAV_HEIGHT = 50;
-    
-    // Static instance for event callbacks
-    static Launcher* instance;
+    // Timing
+    uint32_t last_status_update_;
+    uint32_t last_grid_update_;
+    uint32_t update_interval_;
 };
 
-#endif // LAUNCHER_H
+// ===== GLOBAL LAUNCHER INSTANCE =====
+extern Launcher* g_launcher;
+
+// ===== LAUNCHER UTILITY FUNCTIONS =====
+
+/**
+ * @brief Initialize global launcher
+ * @return true if successful
+ */
+bool initializeLauncher();
+
+/**
+ * @brief Get global launcher instance
+ * @return Launcher pointer
+ */
+Launcher* getLauncher();
+
+/**
+ * @brief Create default app information
+ * @param name App name
+ * @param description App description
+ * @param type App type
+ * @return App information
+ */
+AppInfo createAppInfo(const String& name, const String& description, AppType type);
+
+/**
+ * @brief Format battery percentage
+ * @param voltage Battery voltage
+ * @return Battery percentage
+ */
+uint8_t getBatteryPercentage(float voltage);
+
+/**
+ * @brief Format uptime string
+ * @param uptime_ms Uptime in milliseconds
+ * @return Uptime string
+ */
+String formatUptime(uint32_t uptime_ms);
+
+/**
+ * @brief Format memory size
+ * @param bytes Memory size in bytes
+ * @return Formatted size string
+ */
+String formatMemorySize(size_t bytes);
+
+#endif // LAUNCHER_H 

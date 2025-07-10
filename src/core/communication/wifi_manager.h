@@ -1,61 +1,39 @@
 /**
  * @file wifi_manager.h
- * @brief WiFi communication manager for T-Deck-Pro OS
+ * @brief T-Deck-Pro WiFi Manager - Network connectivity and management
  * @author T-Deck-Pro OS Team
  * @date 2025
+ * @note Handles WiFi connectivity with power management and automatic reconnection
  */
 
-#pragma once
+#ifndef WIFI_MANAGER_H
+#define WIFI_MANAGER_H
 
+#include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
-#include <WiFiAP.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-#include <freertos/queue.h>
-#include <freertos/semphr.h>
-#include <vector>
-#include "core/utils/logger.h"
+#include <WiFiServer.h>
+#include <esp_wifi.h>
+#include <esp_event.h>
+#include <esp_log.h>
 
-namespace TDeckOS {
-namespace Communication {
+#include "../hal/board_config_corrected.h"
 
-/**
- * @brief WiFi operating modes
- */
-enum class WiFiMode {
-    OFF,
-    STATION,
-    ACCESS_POINT,
-    STATION_AP
-};
-
-/**
- * @brief WiFi connection status
- */
-enum class WiFiStatus {
+// ===== WIFI STATES =====
+enum class WiFiState {
     DISCONNECTED,
     CONNECTING,
     CONNECTED,
-    FAILED,
-    LOST_CONNECTION
+    ERROR,
+    POWER_SAVING
 };
 
-/**
- * @brief WiFi security types
- */
-enum class WiFiSecurity {
-    OPEN,
-    WEP,
-    WPA_PSK,
-    WPA2_PSK,
-    WPA_WPA2_PSK,
-    WPA2_ENTERPRISE,
-    WPA3_PSK,
-    WPA2_WPA3_PSK,
-    WAPI_PSK,
-    UNKNOWN
-};
+// ===== WIFI CONFIGURATION =====
+#define WIFI_MAX_SSID_LENGTH 32
+#define WIFI_MAX_PASSWORD_LENGTH 64
+#define WIFI_CONNECT_TIMEOUT_MS 10000
+#define WIFI_RETRY_COUNT 3
+#define WIFI_SCAN_TIMEOUT_MS 5000
 
 /**
  * @brief WiFi network information
@@ -63,262 +41,329 @@ enum class WiFiSecurity {
 struct WiFiNetwork {
     String ssid;
     int32_t rssi;
+    uint8_t encryption_type;
     uint8_t channel;
-    WiFiSecurity security;
-    bool isHidden;
+    bool is_connected;
 };
 
 /**
- * @brief WiFi configuration for station mode
+ * @brief WiFi configuration
  */
-struct WiFiStationConfig {
+struct WiFiConfig {
     String ssid;
     String password;
-    bool autoReconnect = true;
-    uint32_t connectTimeoutMs = 10000;
-    uint8_t maxRetries = 3;
-    bool useDHCP = true;
-    IPAddress staticIP;
-    IPAddress gateway;
-    IPAddress subnet;
-    IPAddress dns1;
-    IPAddress dns2;
+    String hostname;
+    bool auto_connect;
+    bool power_saving;
+    uint8_t max_retries;
+    uint32_t connect_timeout;
 };
 
 /**
- * @brief WiFi configuration for access point mode
- */
-struct WiFiAPConfig {
-    String ssid;
-    String password;
-    uint8_t channel = 1;
-    bool hidden = false;
-    uint8_t maxConnections = 4;
-    IPAddress ip = IPAddress(192, 168, 4, 1);
-    IPAddress gateway = IPAddress(192, 168, 4, 1);
-    IPAddress subnet = IPAddress(255, 255, 255, 0);
-};
-
-/**
- * @brief WiFi statistics
- */
-struct WiFiStats {
-    uint32_t connectAttempts;
-    uint32_t successfulConnections;
-    uint32_t disconnections;
-    uint32_t reconnections;
-    uint32_t scanCount;
-    uint32_t bytesTransmitted;
-    uint32_t bytesReceived;
-    uint32_t uptime;
-    int32_t lastRssi;
-    uint8_t lastChannel;
-};
-
-/**
- * @brief Callback function types
- */
-typedef void (*WiFiEventCallback)(WiFiStatus status, const String& info);
-typedef void (*WiFiScanCallback)(const std::vector<WiFiNetwork>& networks);
-
-/**
- * @brief WiFi Manager class
+ * @brief WiFi manager for T-Deck-Pro
+ * @note Handles WiFi connectivity with power management
  */
 class WiFiManager {
 public:
-    /**
-     * @brief Constructor
-     */
     WiFiManager();
-
-    /**
-     * @brief Destructor
-     */
     ~WiFiManager();
-
+    
     /**
      * @brief Initialize WiFi manager
-     * @return true if successful, false otherwise
+     * @return true if successful
      */
     bool initialize();
-
-    /**
-     * @brief Deinitialize WiFi manager
-     */
-    void deinitialize();
-
+    
     /**
      * @brief Check if WiFi is initialized
-     * @return true if initialized, false otherwise
+     * @return true if initialized
      */
-    bool isInitialized() const { return m_initialized; }
-
+    bool isInitialized() const { return initialized_; }
+    
     /**
-     * @brief Set WiFi mode
-     * @param mode WiFi mode
-     * @return true if successful, false otherwise
+     * @brief Get WiFi state
+     * @return Current WiFi state
      */
-    bool setMode(WiFiMode mode);
-
+    WiFiState getState() const { return current_state_; }
+    
     /**
-     * @brief Get current WiFi mode
-     * @return Current mode
+     * @brief Connect to WiFi network
+     * @param ssid Network SSID
+     * @param password Network password
+     * @return true if successful
      */
-    WiFiMode getMode() const { return m_currentMode; }
-
+    bool connect(const String& ssid, const String& password);
+    
     /**
-     * @brief Connect to WiFi network (station mode)
-     * @param config Station configuration
-     * @param callback Optional callback for connection events
-     * @return true if connection started, false otherwise
+     * @brief Connect using stored configuration
+     * @return true if successful
      */
-    bool connect(const WiFiStationConfig& config, WiFiEventCallback callback = nullptr);
-
+    bool connect();
+    
     /**
-     * @brief Disconnect from WiFi network
+     * @brief Disconnect from WiFi
      */
     void disconnect();
-
-    /**
-     * @brief Start access point
-     * @param config AP configuration
-     * @return true if successful, false otherwise
-     */
-    bool startAP(const WiFiAPConfig& config);
-
-    /**
-     * @brief Stop access point
-     */
-    void stopAP();
-
-    /**
-     * @brief Get connection status
-     * @return Current status
-     */
-    WiFiStatus getStatus() const { return m_status; }
-
+    
     /**
      * @brief Check if connected to WiFi
-     * @return true if connected, false otherwise
+     * @return true if connected
      */
-    bool isConnected() const { return m_status == WiFiStatus::CONNECTED; }
-
-    /**
-     * @brief Scan for available networks
-     * @param callback Callback for scan results
-     * @param async Perform asynchronous scan
-     * @return true if scan started, false otherwise
-     */
-    bool scanNetworks(WiFiScanCallback callback, bool async = true);
-
-    /**
-     * @brief Get current IP address
-     * @return IP address
-     */
-    IPAddress getIPAddress() const;
-
-    /**
-     * @brief Get current MAC address
-     * @return MAC address as string
-     */
-    String getMACAddress() const;
-
+    bool isConnected() const;
+    
     /**
      * @brief Get current SSID
      * @return SSID string
      */
     String getSSID() const;
-
+    
     /**
-     * @brief Get current RSSI
-     * @return RSSI in dBm
+     * @brief Get local IP address
+     * @return IP address string
+     */
+    String getLocalIP() const;
+    
+    /**
+     * @brief Get RSSI (signal strength)
+     * @return RSSI value
      */
     int32_t getRSSI() const;
-
+    
     /**
-     * @brief Get current channel
-     * @return Channel number
+     * @brief Get MAC address
+     * @return MAC address string
      */
-    uint8_t getChannel() const;
-
+    String getMACAddress() const;
+    
     /**
-     * @brief Get number of connected clients (AP mode)
-     * @return Number of connected clients
+     * @brief Scan for available networks
+     * @return Number of networks found
      */
-    uint8_t getConnectedClients() const;
-
+    int scanNetworks();
+    
     /**
-     * @brief Set power save mode
-     * @param enable Enable/disable power save
-     * @return true if successful, false otherwise
+     * @brief Get scanned networks
+     * @return Vector of network information
      */
-    bool setPowerSave(bool enable);
-
+    std::vector<WiFiNetwork> getScannedNetworks() const;
+    
     /**
-     * @brief Set WiFi power
-     * @param power Power level (0-20.5 dBm)
-     * @return true if successful, false otherwise
+     * @brief Set WiFi configuration
+     * @param config WiFi configuration
      */
-    bool setPower(float power);
-
+    void setConfig(const WiFiConfig& config);
+    
     /**
-     * @brief Get WiFi statistics
-     * @return Current statistics
+     * @brief Get WiFi configuration
+     * @return WiFi configuration
      */
-    WiFiStats getStats() const;
-
+    WiFiConfig getConfig() const { return config_; }
+    
     /**
-     * @brief Reset statistics
+     * @brief Load configuration from storage
+     * @return true if successful
      */
-    void resetStats();
-
+    bool loadConfig();
+    
     /**
-     * @brief Process WiFi events (call from main loop)
+     * @brief Save configuration to storage
+     * @return true if successful
+     */
+    bool saveConfig();
+    
+    /**
+     * @brief Enable/disable power saving
+     * @param enabled true to enable
+     */
+    void setPowerSaving(bool enabled);
+    
+    /**
+     * @brief Check if power saving is enabled
+     * @return true if enabled
+     */
+    bool isPowerSavingEnabled() const { return config_.power_saving; }
+    
+    /**
+     * @brief Set hostname
+     * @param hostname Hostname string
+     */
+    void setHostname(const String& hostname);
+    
+    /**
+     * @brief Get hostname
+     * @return Hostname string
+     */
+    String getHostname() const { return config_.hostname; }
+    
+    /**
+     * @brief Enable/disable auto-connect
+     * @param enabled true to enable
+     */
+    void setAutoConnect(bool enabled);
+    
+    /**
+     * @brief Check if auto-connect is enabled
+     * @return true if enabled
+     */
+    bool isAutoConnectEnabled() const { return config_.auto_connect; }
+    
+    /**
+     * @brief Process WiFi events
      */
     void process();
-
+    
     /**
-     * @brief Set event callback
-     * @param callback Event callback function
+     * @brief Get connection statistics
+     * @return Statistics JSON string
      */
-    void setEventCallback(WiFiEventCallback callback) { m_eventCallback = callback; }
+    String getStatistics();
+    
+    /**
+     * @brief Reset connection statistics
+     */
+    void resetStatistics();
+    
+    /**
+     * @brief Get WiFi status information
+     * @return Status JSON string
+     */
+    String getStatus();
 
 private:
-    // Configuration
-    bool m_initialized;
-    WiFiMode m_currentMode;
-    WiFiStatus m_status;
-    WiFiStationConfig m_stationConfig;
-    WiFiAPConfig m_apConfig;
+    // ===== WIFI OPERATIONS =====
     
-    // Callbacks
-    WiFiEventCallback m_eventCallback;
-    WiFiScanCallback m_scanCallback;
+    /**
+     * @brief Initialize WiFi hardware
+     * @return true if successful
+     */
+    bool initHardware();
     
-    // Statistics
-    mutable WiFiStats m_stats;
-    uint32_t m_initTime;
-    uint32_t m_lastConnectAttempt;
-    uint8_t m_retryCount;
+    /**
+     * @brief Initialize WiFi event handlers
+     * @return true if successful
+     */
+    bool initEventHandlers();
     
-    // FreeRTOS
-    TaskHandle_t m_taskHandle;
-    QueueHandle_t m_eventQueue;
-    SemaphoreHandle_t m_mutex;
+    /**
+     * @brief Configure WiFi settings
+     * @return true if successful
+     */
+    bool configureWiFi();
     
-    // Internal methods
-    static void wifiTask(void* parameter);
-    static void wifiEventHandler(WiFiEvent_t event);
-    void handleWiFiEvent(WiFiEvent_t event);
-    void updateStats();
-    WiFiSecurity getSecurityType(wifi_auth_mode_t authMode);
-    bool configureStation();
-    bool configureAP();
-    void checkConnection();
+    /**
+     * @brief Attempt connection to network
+     * @param ssid Network SSID
+     * @param password Network password
+     * @return true if successful
+     */
+    bool attemptConnection(const String& ssid, const String& password);
     
-    // Static instance for event handler
-    static WiFiManager* s_instance;
+    /**
+     * @brief Handle WiFi connection success
+     */
+    void handleConnectionSuccess();
+    
+    /**
+     * @brief Handle WiFi connection failure
+     * @param reason Failure reason
+     */
+    void handleConnectionFailure(const String& reason);
+    
+    /**
+     * @brief Handle WiFi disconnection
+     * @param reason Disconnection reason
+     */
+    void handleDisconnection(const String& reason);
+    
+    /**
+     * @brief Set WiFi state
+     * @param state New state
+     */
+    void setState(WiFiState state);
+    
+    /**
+     * @brief Log WiFi event
+     * @param event Event description
+     */
+    void logEvent(const String& event);
+    
+    /**
+     * @brief Update connection statistics
+     * @param connected true if connected
+     */
+    void updateStatistics(bool connected);
+    
+    /**
+     * @brief WiFi event handler
+     * @param event WiFi event
+     */
+    void onWiFiEvent(WiFiEvent_t event);
+
+private:
+    // ===== MEMBER VARIABLES =====
+    bool initialized_;
+    WiFiState current_state_;
+    WiFiConfig config_;
+    
+    // Scanned networks
+    std::vector<WiFiNetwork> scanned_networks_;
+    
+    // Connection tracking
+    uint32_t connection_attempts_;
+    uint32_t successful_connections_;
+    uint32_t failed_connections_;
+    uint32_t total_connection_time_;
+    uint32_t last_connection_time_;
+    uint32_t last_disconnect_time_;
+    
+    // Timing
+    uint32_t last_scan_time_;
+    uint32_t last_check_time_;
+    uint32_t reconnect_interval_;
+    
+    // Event handlers
+    WiFiEventHandler station_connected_handler_;
+    WiFiEventHandler station_disconnected_handler_;
+    WiFiEventHandler station_got_ip_handler_;
+    WiFiEventHandler station_lost_ip_handler_;
 };
 
-} // namespace Communication
-} // namespace TDeckOS
+// ===== GLOBAL WIFI MANAGER INSTANCE =====
+extern WiFiManager* g_wifi_manager;
+
+// ===== WIFI UTILITY FUNCTIONS =====
+
+/**
+ * @brief Initialize global WiFi manager
+ * @return true if successful
+ */
+bool initializeWiFiManager();
+
+/**
+ * @brief Get global WiFi manager instance
+ * @return WiFi manager pointer
+ */
+WiFiManager* getWiFiManager();
+
+/**
+ * @brief WiFi event handler callback
+ * @param event WiFi event
+ * @param info Event information
+ */
+void wifi_event_handler(WiFiEvent_t event, WiFiEventInfo_t info);
+
+/**
+ * @brief Get WiFi encryption type string
+ * @param encryption_type Encryption type
+ * @return Encryption type string
+ */
+String getWiFiEncryptionTypeString(uint8_t encryption_type);
+
+/**
+ * @brief Get WiFi signal strength string
+ * @param rssi RSSI value
+ * @return Signal strength string
+ */
+String getWiFiSignalStrengthString(int32_t rssi);
+
+#endif // WIFI_MANAGER_H 

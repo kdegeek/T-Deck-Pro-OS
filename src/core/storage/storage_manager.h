@@ -1,153 +1,438 @@
-// storage_manager.h
-// T-Deck-Pro OS Storage Management System
-#pragma once
+/**
+ * @file storage_manager.h
+ * @brief T-Deck-Pro Storage Manager - SD Card and SPIFFS Management
+ * @author T-Deck-Pro OS Team
+ * @date 2025
+ * @note Handles SD card and SPIFFS file systems with error recovery
+ */
+
+#ifndef STORAGE_MANAGER_H
+#define STORAGE_MANAGER_H
 
 #include <Arduino.h>
-#include <SPIFFS.h>
 #include <SD.h>
+#include <SPIFFS.h>
 #include <FS.h>
-#include <vector>
-#include "core/utils/logger.h"
+#include <ArduinoJson.h>
 
-// Storage types
-typedef enum {
-    STORAGE_FLASH,      // Internal flash (SPIFFS)
-    STORAGE_SD_CARD,    // External SD card
-    STORAGE_AUTO        // Automatically choose best storage
-} storage_type_t;
+#include "../hal/board_config_corrected.h"
 
-// Storage priority for different content types
-typedef enum {
-    STORAGE_PRIORITY_FLASH,     // Prefer flash storage
-    STORAGE_PRIORITY_SD,        // Prefer SD card storage
-    STORAGE_PRIORITY_BALANCED   // Balance between flash and SD
-} storage_priority_t;
+// ===== STORAGE STATES =====
+enum class StorageState {
+    INIT,
+    READY,
+    ERROR,
+    MOUNTING,
+    FORMATTING
+};
 
-// File metadata
+// ===== STORAGE TYPES =====
+enum class StorageType {
+    SPIFFS,
+    SD_CARD,
+    BOTH
+};
+
+// ===== STORAGE CONFIGURATION =====
+#define STORAGE_MAX_PATH_LENGTH 128
+#define STORAGE_MAX_FILE_SIZE 1048576  // 1MB
+#define STORAGE_BUFFER_SIZE 1024
+#define STORAGE_MOUNT_TIMEOUT_MS 5000
+
+/**
+ * @brief File information structure
+ */
 struct FileInfo {
+    String name;
     String path;
     size_t size;
-    storage_type_t location;
-    bool isDirectory;
-    time_t lastModified;
-    bool canMove;  // Can be moved between storage types
+    bool is_directory;
+    uint32_t last_modified;
+    String extension;
 };
 
-// Storage statistics
+/**
+ * @brief Storage statistics
+ */
 struct StorageStats {
-    // Flash storage
-    size_t flashTotal;
-    size_t flashUsed;
-    size_t flashFree;
-    
-    // SD card storage
-    size_t sdTotal;
-    size_t sdUsed;
-    size_t sdFree;
-    
-    // File counts
-    uint32_t flashFiles;
-    uint32_t sdFiles;
-    uint32_t totalFiles;
+    size_t total_space;
+    size_t used_space;
+    size_t free_space;
+    uint32_t file_count;
+    uint32_t directory_count;
+    uint32_t read_operations;
+    uint32_t write_operations;
+    uint32_t error_count;
 };
 
+/**
+ * @brief Storage manager for T-Deck-Pro
+ * @note Handles SD card and SPIFFS with error recovery
+ */
 class StorageManager {
-private:
-    static StorageManager* instance;
-    
-    bool flashInitialized;
-    bool sdInitialized;
-    storage_priority_t defaultPriority;
-    
-    // Storage thresholds
-    float flashWarningThreshold;  // Warn when flash usage exceeds this %
-    float flashCriticalThreshold; // Critical when flash usage exceeds this %
-    
-    // Internal methods
-    bool initializeFlash();
-    bool initializeSD();
-    storage_type_t selectBestStorage(size_t fileSize, storage_priority_t priority);
-    bool moveFileInternal(const String& srcPath, storage_type_t srcType, 
-                         const String& dstPath, storage_type_t dstType);
-    
 public:
     StorageManager();
     ~StorageManager();
     
-    // Singleton access
-    static StorageManager& getInstance();
-    
-    // Initialization
+    /**
+     * @brief Initialize storage manager
+     * @return true if successful
+     */
     bool initialize();
-    void shutdown();
     
-    // Storage availability
-    bool isFlashAvailable() const;
-    bool isSDAvailable() const;
+    /**
+     * @brief Check if storage is initialized
+     * @return true if initialized
+     */
+    bool isInitialized() const { return initialized_; }
     
-    // File operations
-    bool writeFile(const String& path, const uint8_t* data, size_t size, 
-                   storage_priority_t priority = STORAGE_PRIORITY_BALANCED);
-    bool readFile(const String& path, uint8_t* buffer, size_t bufferSize, size_t* bytesRead);
-    bool deleteFile(const String& path);
-    bool fileExists(const String& path);
-    bool createDirectory(const String& path, storage_type_t storage = STORAGE_AUTO);
+    /**
+     * @brief Get storage state
+     * @return Current storage state
+     */
+    StorageState getState() const { return current_state_; }
     
-    // File management
-    bool moveFile(const String& srcPath, const String& dstPath, storage_type_t dstStorage = STORAGE_AUTO);
-    bool copyFile(const String& srcPath, const String& dstPath, storage_type_t dstStorage = STORAGE_AUTO);
-    FileInfo getFileInfo(const String& path);
-    std::vector<FileInfo> listFiles(const String& directory, bool recursive = false);
+    /**
+     * @brief Mount SD card
+     * @return true if successful
+     */
+    bool mountSDCard();
     
-    // Storage optimization
-    bool optimizeStorage();
-    bool moveToSD(const String& path);
-    bool moveToFlash(const String& path);
-    bool autoBalance();
+    /**
+     * @brief Mount SPIFFS
+     * @return true if successful
+     */
+    bool mountSPIFFS();
     
-    // App-specific operations
-    bool installApp(const String& appPath, const uint8_t* appData, size_t appSize);
-    bool uninstallApp(const String& appId);
-    bool loadAppFromStorage(const String& appId, uint8_t* buffer, size_t bufferSize, size_t* appSize);
-    std::vector<String> getInstalledApps();
+    /**
+     * @brief Unmount SD card
+     * @return true if successful
+     */
+    bool unmountSDCard();
     
-    // Configuration
-    void setStoragePriority(storage_priority_t priority);
-    void setFlashThresholds(float warning, float critical);
+    /**
+     * @brief Unmount SPIFFS
+     * @return true if successful
+     */
+    bool unmountSPIFFS();
     
-    // Statistics and monitoring
-    StorageStats getStorageStats();
-    float getFlashUsagePercent();
-    float getSDUsagePercent();
-    bool isFlashCritical();
-    bool isFlashWarning();
+    /**
+     * @brief Check if SD card is mounted
+     * @return true if mounted
+     */
+    bool isSDCardMounted() const { return sd_card_mounted_; }
     
-    // Maintenance
-    bool cleanupTempFiles();
-    bool defragmentStorage();
-    bool verifyStorageIntegrity();
+    /**
+     * @brief Check if SPIFFS is mounted
+     * @return true if mounted
+     */
+    bool isSPIFFSMounted() const { return spiffs_mounted_; }
     
-    // File system access
-    fs::FS& getFlashFS();
-    fs::FS& getSDFS();
-    fs::FS& getStorageFS(storage_type_t storage);
+    /**
+     * @brief List files in directory
+     * @param path Directory path
+     * @param type Storage type
+     * @return Vector of file information
+     */
+    std::vector<FileInfo> listFiles(const String& path, StorageType type = StorageType::BOTH);
+    
+    /**
+     * @brief Create directory
+     * @param path Directory path
+     * @param type Storage type
+     * @return true if successful
+     */
+    bool createDirectory(const String& path, StorageType type = StorageType::SD_CARD);
+    
+    /**
+     * @brief Delete file or directory
+     * @param path File/directory path
+     * @param type Storage type
+     * @return true if successful
+     */
+    bool deleteFile(const String& path, StorageType type = StorageType::BOTH);
+    
+    /**
+     * @brief Read file content
+     * @param path File path
+     * @param type Storage type
+     * @return File content string
+     */
+    String readFile(const String& path, StorageType type = StorageType::BOTH);
+    
+    /**
+     * @brief Write file content
+     * @param path File path
+     * @param content File content
+     * @param type Storage type
+     * @return true if successful
+     */
+    bool writeFile(const String& path, const String& content, StorageType type = StorageType::BOTH);
+    
+    /**
+     * @brief Append to file
+     * @param path File path
+     * @param content Content to append
+     * @param type Storage type
+     * @return true if successful
+     */
+    bool appendFile(const String& path, const String& content, StorageType type = StorageType::BOTH);
+    
+    /**
+     * @brief Check if file exists
+     * @param path File path
+     * @param type Storage type
+     * @return true if exists
+     */
+    bool fileExists(const String& path, StorageType type = StorageType::BOTH);
+    
+    /**
+     * @brief Get file size
+     * @param path File path
+     * @param type Storage type
+     * @return File size in bytes
+     */
+    size_t getFileSize(const String& path, StorageType type = StorageType::BOTH);
+    
+    /**
+     * @brief Copy file
+     * @param source Source path
+     * @param destination Destination path
+     * @param source_type Source storage type
+     * @param dest_type Destination storage type
+     * @return true if successful
+     */
+    bool copyFile(const String& source, const String& destination, 
+                  StorageType source_type = StorageType::SD_CARD,
+                  StorageType dest_type = StorageType::SPIFFS);
+    
+    /**
+     * @brief Move file
+     * @param source Source path
+     * @param destination Destination path
+     * @param source_type Source storage type
+     * @param dest_type Destination storage type
+     * @return true if successful
+     */
+    bool moveFile(const String& source, const String& destination,
+                  StorageType source_type = StorageType::SD_CARD,
+                  StorageType dest_type = StorageType::SPIFFS);
+    
+    /**
+     * @brief Get storage statistics
+     * @param type Storage type
+     * @return Storage statistics
+     */
+    StorageStats getStats(StorageType type = StorageType::BOTH);
+    
+    /**
+     * @brief Format storage
+     * @param type Storage type
+     * @return true if successful
+     */
+    bool format(StorageType type = StorageType::SPIFFS);
+    
+    /**
+     * @brief Check storage health
+     * @param type Storage type
+     * @return true if healthy
+     */
+    bool checkHealth(StorageType type = StorageType::BOTH);
+    
+    /**
+     * @brief Load JSON configuration
+     * @param path File path
+     * @param doc JSON document
+     * @param type Storage type
+     * @return true if successful
+     */
+    bool loadJSON(const String& path, JsonDocument& doc, StorageType type = StorageType::BOTH);
+    
+    /**
+     * @brief Save JSON configuration
+     * @param path File path
+     * @param doc JSON document
+     * @param type Storage type
+     * @return true if successful
+     */
+    bool saveJSON(const String& path, const JsonDocument& doc, StorageType type = StorageType::BOTH);
+    
+    /**
+     * @brief Get available storage space
+     * @param type Storage type
+     * @return Available space in bytes
+     */
+    size_t getFreeSpace(StorageType type = StorageType::BOTH);
+    
+    /**
+     * @brief Get total storage space
+     * @param type Storage type
+     * @return Total space in bytes
+     */
+    size_t getTotalSpace(StorageType type = StorageType::BOTH);
+    
+    /**
+     * @brief Get storage usage percentage
+     * @param type Storage type
+     * @return Usage percentage (0-100)
+     */
+    uint8_t getUsagePercentage(StorageType type = StorageType::BOTH);
+    
+    /**
+     * @brief Process storage events
+     */
+    void process();
+
+private:
+    // ===== STORAGE OPERATIONS =====
+    
+    /**
+     * @brief Initialize storage hardware
+     * @return true if successful
+     */
+    bool initHardware();
+    
+    /**
+     * @brief Initialize file systems
+     * @return true if successful
+     */
+    bool initFileSystems();
+    
+    /**
+     * @brief Configure storage settings
+     * @return true if successful
+     */
+    bool configureStorage();
+    
+    /**
+     * @brief Get file system for type
+     * @param type Storage type
+     * @return File system pointer
+     */
+    fs::FS* getFileSystem(StorageType type);
+    
+    /**
+     * @brief Check if path exists in storage type
+     * @param path File path
+     * @param type Storage type
+     * @return true if exists
+     */
+    bool pathExists(const String& path, StorageType type);
+    
+    /**
+     * @brief Get file information
+     * @param path File path
+     * @param type Storage type
+     * @return File information
+     */
+    FileInfo getFileInfo(const String& path, StorageType type);
+    
+    /**
+     * @brief Set storage state
+     * @param state New state
+     */
+    void setState(StorageState state);
+    
+    /**
+     * @brief Log storage event
+     * @param event Event description
+     */
+    void logEvent(const String& event);
+    
+    /**
+     * @brief Update storage statistics
+     * @param type Storage type
+     */
+    void updateStats(StorageType type);
+    
+    /**
+     * @brief Handle storage error
+     * @param error Error message
+     * @param type Storage type
+     */
+    void handleError(const String& error, StorageType type);
+
+private:
+    // ===== MEMBER VARIABLES =====
+    bool initialized_;
+    StorageState current_state_;
+    bool sd_card_mounted_;
+    bool spiffs_mounted_;
+    
+    // Storage statistics
+    StorageStats sd_stats_;
+    StorageStats spiffs_stats_;
+    
+    // Error tracking
+    uint32_t error_count_;
+    String last_error_;
+    
+    // Timing
+    uint32_t last_check_time_;
+    uint32_t last_stats_update_;
+    
+    // File system objects
+    fs::FS* sd_fs_;
+    fs::FS* spiffs_fs_;
 };
 
-// Convenience macros
-#define STORAGE_MGR StorageManager::getInstance()
+// ===== GLOBAL STORAGE MANAGER INSTANCE =====
+extern StorageManager* g_storage_manager;
 
-// Add these constants after the existing includes
+// ===== STORAGE UTILITY FUNCTIONS =====
 
-// Storage paths
-#define STORAGE_PATH_APPS     "/apps"
-#define STORAGE_PATH_DATA     "/data"
-#define STORAGE_PATH_CONFIG   "/config"
-#define STORAGE_PATH_LOGS     "/logs"
-#define STORAGE_PATH_TEMP     "/temp"
-#define STORAGE_PATH_CACHE    "/cache"
+/**
+ * @brief Initialize global storage manager
+ * @return true if successful
+ */
+bool initializeStorageManager();
 
-// App storage structure
-#define APP_MANIFEST_FILE "manifest.json"
-#define APP_BINARY_FILE "app.bin"
-#define APP_RESOURCES_DIR "resources"
-#define APP_DATA_DIR "data"
+/**
+ * @brief Get global storage manager instance
+ * @return Storage manager pointer
+ */
+StorageManager* getStorageManager();
+
+/**
+ * @brief Get file extension from path
+ * @param path File path
+ * @return File extension
+ */
+String getFileExtension(const String& path);
+
+/**
+ * @brief Get file name from path
+ * @param path File path
+ * @return File name
+ */
+String getFileName(const String& path);
+
+/**
+ * @brief Get directory path from full path
+ * @param path Full path
+ * @return Directory path
+ */
+String getDirectoryPath(const String& path);
+
+/**
+ * @brief Format file size for display
+ * @param size File size in bytes
+ * @return Formatted size string
+ */
+String formatFileSize(size_t size);
+
+/**
+ * @brief Check if path is absolute
+ * @param path File path
+ * @return true if absolute
+ */
+bool isAbsolutePath(const String& path);
+
+/**
+ * @brief Normalize file path
+ * @param path File path
+ * @return Normalized path
+ */
+String normalizePath(const String& path);
+
+#endif // STORAGE_MANAGER_H 

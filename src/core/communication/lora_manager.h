@@ -1,269 +1,171 @@
 /**
  * @file lora_manager.h
- * @brief LoRa communication manager for T-Deck-Pro OS
+ * @brief T-Deck-Pro LoRa Manager - SX1262 Communication
  * @author T-Deck-Pro OS Team
  * @date 2025
+ * @note Handles SX1262 LoRa communication with mesh networking support
  */
 
-#pragma once
+#ifndef LORA_MANAGER_H
+#define LORA_MANAGER_H
 
+#include <Arduino.h>
 #include <RadioLib.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-#include <freertos/queue.h>
-#include <freertos/semphr.h>
-#include "core/hal/board_config.h"
-#include "core/utils/logger.h"
+#include "../utils/logger.h"
 
-namespace TDeckOS {
-namespace Communication {
+// ===== LORA CONSTANTS =====
+#define LORA_FREQUENCY_DEFAULT 915000000
+#define LORA_BANDWIDTH_DEFAULT 125000
+#define LORA_SPREADING_FACTOR_DEFAULT 7
+#define LORA_CODING_RATE_DEFAULT 5
+#define LORA_OUTPUT_POWER_DEFAULT 10
+#define LORA_PREAMBLE_LENGTH_DEFAULT 8
+#define LORA_CRC_DEFAULT true
 
-/**
- * @brief LoRa operating modes
- */
-enum class LoRaMode {
-    IDLE,
-    TRANSMIT,
-    RECEIVE,
-    SLEEP
+#define LORA_PACKET_SIZE_MAX 255
+#define LORA_RECEIVE_TIMEOUT 1000
+#define LORA_TRANSMIT_TIMEOUT 5000
+
+// ===== LORA PACKET TYPES =====
+enum class LoRaPacketType {
+    DATA = 0x01,
+    ACK = 0x02,
+    HEARTBEAT = 0x03,
+    DISCOVERY = 0x04,
+    ROUTING = 0x05,
+    CONTROL = 0x06
 };
 
-/**
- * @brief LoRa configuration parameters
- */
-struct LoRaConfig {
-    float frequency = 850.0;        // MHz
-    float bandwidth = 125.0;        // kHz
-    uint8_t spreadingFactor = 10;   // SF10
-    uint8_t codingRate = 6;         // CR 4/6
-    int8_t outputPower = 22;        // dBm
-    uint16_t preambleLength = 15;   // symbols
-    uint8_t syncWord = 0xAB;        // LoRa sync word
-    float tcxoVoltage = 2.4;        // V
-    uint8_t currentLimit = 140;     // mA
-    bool crcEnabled = false;
-};
-
-/**
- * @brief LoRa packet structure
- */
+// ===== LORA PACKET STRUCTURE =====
 struct LoRaPacket {
-    uint8_t* data;
-    size_t length;
-    int16_t rssi;
-    float snr;
-    float frequencyError;
-    uint32_t timestamp;
-    bool isValid;
+    uint8_t type;
+    uint8_t source_id[4];
+    uint8_t destination_id[4];
+    uint8_t sequence;
+    uint8_t length;
+    uint8_t data[LORA_PACKET_SIZE_MAX - 12];
+    uint8_t checksum;
+    
+    LoRaPacket() : type(0), sequence(0), length(0), checksum(0) {
+        memset(source_id, 0, 4);
+        memset(destination_id, 0, 4);
+        memset(data, 0, sizeof(data));
+    }
 };
 
-/**
- * @brief LoRa statistics
- */
-struct LoRaStats {
-    uint32_t packetsTransmitted;
-    uint32_t packetsReceived;
-    uint32_t transmissionErrors;
-    uint32_t receptionErrors;
-    uint32_t crcErrors;
-    int16_t lastRssi;
-    float lastSnr;
-    uint32_t uptime;
+// ===== LORA CONFIGURATION =====
+struct LoRaConfig {
+    uint32_t frequency;
+    uint32_t bandwidth;
+    uint8_t spreading_factor;
+    uint8_t coding_rate;
+    int8_t output_power;
+    uint8_t preamble_length;
+    bool crc_enabled;
+    uint8_t sync_word;
+    
+    LoRaConfig() : frequency(LORA_FREQUENCY_DEFAULT), bandwidth(LORA_BANDWIDTH_DEFAULT),
+                   spreading_factor(LORA_SPREADING_FACTOR_DEFAULT), coding_rate(LORA_CODING_RATE_DEFAULT),
+                   output_power(LORA_OUTPUT_POWER_DEFAULT), preamble_length(LORA_PREAMBLE_LENGTH_DEFAULT),
+                   crc_enabled(LORA_CRC_DEFAULT), sync_word(0x12) {}
 };
 
-/**
- * @brief Callback function types
- */
-typedef void (*LoRaTransmitCallback)(bool success, int errorCode);
-typedef void (*LoRaReceiveCallback)(const LoRaPacket& packet);
-
-/**
- * @brief LoRa Manager class for SX1262 radio
- */
+// ===== LORA MANAGER CLASS =====
 class LoRaManager {
 public:
-    /**
-     * @brief Constructor
-     */
+    // Constructor/Destructor
     LoRaManager();
-
-    /**
-     * @brief Destructor
-     */
     ~LoRaManager();
-
-    /**
-     * @brief Initialize LoRa radio
-     * @param config LoRa configuration parameters
-     * @return true if successful, false otherwise
-     */
-    bool initialize(const LoRaConfig& config = LoRaConfig{});
-
-    /**
-     * @brief Deinitialize LoRa radio
-     */
-    void deinitialize();
-
-    /**
-     * @brief Check if LoRa is initialized
-     * @return true if initialized, false otherwise
-     */
-    bool isInitialized() const { return m_initialized; }
-
-    /**
-     * @brief Set LoRa operating mode
-     * @param mode Operating mode
-     * @return true if successful, false otherwise
-     */
-    bool setMode(LoRaMode mode);
-
-    /**
-     * @brief Get current operating mode
-     * @return Current mode
-     */
-    LoRaMode getMode() const { return m_currentMode; }
-
-    /**
-     * @brief Transmit data
-     * @param data Data to transmit
-     * @param length Data length
-     * @param callback Optional callback for transmission result
-     * @return true if transmission started, false otherwise
-     */
-    bool transmit(const uint8_t* data, size_t length, LoRaTransmitCallback callback = nullptr);
-
-    /**
-     * @brief Transmit string
-     * @param message String to transmit
-     * @param callback Optional callback for transmission result
-     * @return true if transmission started, false otherwise
-     */
-    bool transmit(const String& message, LoRaTransmitCallback callback = nullptr);
-
-    /**
-     * @brief Start continuous receive mode
-     * @param callback Callback for received packets
-     * @return true if successful, false otherwise
-     */
-    bool startReceive(LoRaReceiveCallback callback);
-
-    /**
-     * @brief Stop receive mode
-     */
-    void stopReceive();
-
-    /**
-     * @brief Check if currently receiving
-     * @return true if in receive mode, false otherwise
-     */
-    bool isReceiving() const { return m_currentMode == LoRaMode::RECEIVE; }
-
-    /**
-     * @brief Set sleep mode
-     * @return true if successful, false otherwise
-     */
-    bool sleep();
-
-    /**
-     * @brief Wake up from sleep
-     * @return true if successful, false otherwise
-     */
-    bool wakeup();
-
-    /**
-     * @brief Update configuration
-     * @param config New configuration
-     * @return true if successful, false otherwise
-     */
-    bool updateConfig(const LoRaConfig& config);
-
-    /**
-     * @brief Get current configuration
-     * @return Current configuration
-     */
-    const LoRaConfig& getConfig() const { return m_config; }
-
-    /**
-     * @brief Get statistics
-     * @return Current statistics
-     */
-    LoRaStats getStats() const;
-
-    /**
-     * @brief Reset statistics
-     */
-    void resetStats();
-
-    /**
-     * @brief Get last RSSI
-     * @return RSSI in dBm
-     */
-    int16_t getLastRssi() const;
-
-    /**
-     * @brief Get last SNR
-     * @return SNR in dB
-     */
-    float getLastSnr() const;
-
-    /**
-     * @brief Get frequency error
-     * @return Frequency error in Hz
-     */
-    float getFrequencyError() const;
-
-    /**
-     * @brief Check if radio is busy
-     * @return true if busy, false otherwise
-     */
-    bool isBusy() const;
-
-    /**
-     * @brief Process LoRa events (call from main loop)
-     */
+    
+    // Initialization
+    bool initialize();
+    void cleanup();
+    
+    // Processing
     void process();
+    
+    // Configuration
+    bool setConfig(const LoRaConfig& config);
+    LoRaConfig getConfig() const;
+    bool setFrequency(uint32_t frequency);
+    bool setBandwidth(uint32_t bandwidth);
+    bool setSpreadingFactor(uint8_t sf);
+    bool setCodingRate(uint8_t cr);
+    bool setOutputPower(int8_t power);
+    bool setPreambleLength(uint8_t length);
+    bool setCRC(bool enabled);
+    bool setSyncWord(uint8_t sync_word);
+    
+    // Communication
+    bool transmit(const LoRaPacket& packet);
+    bool transmitData(const uint8_t* data, uint8_t length, uint32_t destination_id = 0);
+    bool transmitString(const String& message, uint32_t destination_id = 0);
+    bool broadcast(const String& message);
+    
+    // Reception
+    bool hasReceived() const;
+    LoRaPacket getReceivedPacket();
+    void clearReceived();
+    
+    // Status
+    bool isInitialized() const;
+    bool isTransmitting() const;
+    bool isReceiving() const;
+    int16_t getRSSI() const;
+    float getSNR() const;
+    uint32_t getPacketCount() const;
+    String getStatus() const;
+    
+    // Utility
+    uint32_t getNodeId() const;
+    void setNodeId(uint32_t node_id);
+    uint8_t getNextSequence();
+    bool validatePacket(const LoRaPacket& packet) const;
+    uint8_t calculateChecksum(const LoRaPacket& packet) const;
 
 private:
     // Hardware
-    SX1262* m_radio;
-    SPIClass* m_spi;
+    SX1262* radio_;
+    bool initialized_;
     
     // Configuration
-    LoRaConfig m_config;
-    bool m_initialized;
-    LoRaMode m_currentMode;
+    LoRaConfig config_;
+    uint32_t node_id_;
+    uint8_t sequence_counter_;
     
-    // Callbacks
-    LoRaTransmitCallback m_transmitCallback;
-    LoRaReceiveCallback m_receiveCallback;
+    // State
+    bool transmitting_;
+    bool receiving_;
+    int16_t last_rssi_;
+    float last_snr_;
+    uint32_t packet_count_;
     
-    // Statistics
-    mutable LoRaStats m_stats;
-    uint32_t m_initTime;
-    
-    // FreeRTOS
-    TaskHandle_t m_taskHandle;
-    QueueHandle_t m_eventQueue;
-    SemaphoreHandle_t m_mutex;
-    
-    // Flags
-    volatile bool m_transmittedFlag;
-    volatile bool m_receivedFlag;
+    // Reception
+    LoRaPacket received_packet_;
+    bool packet_received_;
     
     // Internal methods
+    bool initHardware();
     bool configureRadio();
-    void enableInterrupts();
-    void disableInterrupts();
-    static void transmitISR();
-    static void receiveISR();
-    static void loraTask(void* parameter);
-    void handleTransmitComplete();
-    void handleReceiveComplete();
-    void updateStats();
-    
-    // Static instance for ISR
-    static LoRaManager* s_instance;
+    void handleReceive();
+    void handleTransmit();
+    bool sendPacket(const LoRaPacket& packet);
+    bool receivePacket(LoRaPacket& packet);
+    void updateStatistics();
 };
 
-} // namespace Communication
-} // namespace TDeckOS
+// ===== GLOBAL LORA MANAGER INSTANCE =====
+extern LoRaManager* g_lora_manager;
+
+// ===== GLOBAL LORA FUNCTIONS =====
+bool initializeLoRaManager();
+LoRaManager* getLoRaManager();
+
+// ===== LORA UTILITY FUNCTIONS =====
+uint32_t generateNodeId();
+String frequencyToString(uint32_t frequency);
+uint32_t stringToFrequency(const String& freq_string);
+String spreadingFactorToString(uint8_t sf);
+uint8_t stringToSpreadingFactor(const String& sf_string);
+
+#endif // LORA_MANAGER_H 

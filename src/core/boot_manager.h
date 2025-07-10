@@ -1,32 +1,51 @@
 /**
  * @file boot_manager.h
- * @brief T-Deck-Pro Boot Manager - System startup and initialization
+ * @brief T-Deck-Pro Boot Manager - System initialization and boot sequence
  * @author T-Deck-Pro OS Team
  * @date 2025
+ * @note Handles complete system boot sequence with hardware initialization
  */
 
 #ifndef BOOT_MANAGER_H
 #define BOOT_MANAGER_H
 
 #include <Arduino.h>
-#include "config/os_config_corrected.h"
+#include <esp_system.h>
+#include <esp_log.h>
+#include <esp_sleep.h>
+#include <esp_partition.h>
+#include <esp_heap_caps.h>
+#include <WiFi.h>
+#include <SPI.h>
+#include <Wire.h>
+#include <SD.h>
+#include <SPIFFS.h>
 
-/**
- * @brief Boot stages for tracking startup progress
- */
-enum class BootStage {
-    POWER_ON,
+#include "config/os_config_corrected.h"
+#include "hal/board_config_corrected.h"
+
+// ===== BOOT STATES =====
+enum class BootState {
+    INIT,
     HARDWARE_INIT,
-    STORAGE_INIT,
     DISPLAY_INIT,
-    CONNECTIVITY_INIT,
+    STORAGE_INIT,
+    COMMUNICATION_INIT,
     SERVICES_INIT,
-    COMPLETE,
-    ERROR
+    APPLICATIONS_INIT,
+    READY,
+    ERROR,
+    EMERGENCY_MODE
 };
 
+// ===== BOOT CONFIGURATION =====
+#define BOOT_TIMEOUT_MS 30000
+#define BOOT_RETRY_COUNT 3
+#define EMERGENCY_MODE_TIMEOUT_MS 10000
+
 /**
- * @brief Boot manager handles system startup sequence
+ * @brief Boot manager for T-Deck-Pro OS
+ * @note Handles complete system initialization sequence
  */
 class BootManager {
 public:
@@ -34,145 +53,278 @@ public:
     ~BootManager();
     
     /**
-     * @brief Initialize the boot manager
+     * @brief Initialize boot manager
      * @return true if successful
      */
     bool initialize();
     
     /**
-     * @brief Set current boot stage
-     * @param stage Current boot stage
-     * @param message Optional status message
+     * @brief Execute complete boot sequence
+     * @return true if boot successful
      */
-    void set_boot_stage(BootStage stage, const String& message = "");
+    bool boot();
     
     /**
-     * @brief Get current boot stage
-     * @return Current boot stage
+     * @brief Get current boot state
+     * @return Current boot state
      */
-    BootStage get_boot_stage() const;
+    BootState getState() const { return current_state_; }
     
     /**
-     * @brief Show error message on display
-     * @param error_message Error message to display
+     * @brief Get boot error message
+     * @return Error message string
      */
-    void show_error(const String& error_message);
+    String getErrorMessage() const { return error_message_; }
     
     /**
-     * @brief Show boot progress on display
-     * @param stage Current stage
+     * @brief Get boot time in milliseconds
+     * @return Boot time
+     */
+    uint32_t getBootTime() const { return boot_time_; }
+    
+    /**
+     * @brief Check if system is ready
+     * @return true if system ready
+     */
+    bool isReady() const { return current_state_ == BootState::READY; }
+    
+    /**
+     * @brief Check if in emergency mode
+     * @return true if emergency mode
+     */
+    bool isEmergencyMode() const { return current_state_ == BootState::EMERGENCY_MODE; }
+    
+    /**
+     * @brief Enter emergency mode
+     * @param reason Emergency mode reason
+     */
+    void enterEmergencyMode(const String& reason);
+    
+    /**
+     * @brief Get system health status
+     * @return Health status JSON string
+     */
+    String getHealthStatus();
+    
+    /**
+     * @brief Perform system shutdown
+     * @param reason Shutdown reason
+     */
+    void shutdown(const String& reason = "Normal shutdown");
+    
+    /**
+     * @brief Perform system restart
+     * @param reason Restart reason
+     */
+    void restart(const String& reason = "Normal restart");
+    
+    /**
+     * @brief Get boot progress percentage
+     * @return Progress 0-100
+     */
+    uint8_t getBootProgress() const;
+    
+    /**
+     * @brief Update boot progress
+     * @param progress Progress 0-100
+     */
+    void updateProgress(uint8_t progress);
+    
+    /**
+     * @brief Set boot status message
      * @param message Status message
-     * @param progress Progress percentage (0-100)
      */
-    void show_boot_progress(BootStage stage, const String& message, int progress = -1);
+    void setStatusMessage(const String& message);
     
     /**
-     * @brief Check if boot completed successfully
-     * @return true if boot completed
+     * @brief Get current status message
+     * @return Status message
      */
-    bool is_boot_complete() const;
-    
-    /**
-     * @brief Get boot duration in milliseconds
-     * @return Boot duration
-     */
-    uint32_t get_boot_duration() const;
-    
-    /**
-     * @brief Get boot statistics
-     * @return JSON string with boot statistics
-     */
-    String get_boot_statistics() const;
-    
-    /**
-     * @brief Check system health and decide if restart is needed
-     * @return true if system is healthy
-     */
-    bool check_system_health();
-    
-    /**
-     * @brief Perform emergency restart
-     * @param reason Reason for restart
-     */
-    void emergency_restart(const String& reason);
-    
-    /**
-     * @brief Show splash screen with OS info
-     */
-    void show_splash_screen();
-    
+    String getStatusMessage() const { return status_message_; }
+
 private:
+    // ===== BOOT SEQUENCE METHODS =====
+    
     /**
-     * @brief Initialize basic display for boot messages
+     * @brief Initialize hardware components
      * @return true if successful
      */
-    bool init_basic_display();
+    bool initializeHardware();
     
     /**
-     * @brief Clear display and prepare for text
+     * @brief Initialize display system
+     * @return true if successful
      */
-    void clear_display();
+    bool initializeDisplay();
     
     /**
-     * @brief Draw text on display
-     * @param text Text to draw
-     * @param x X position
-     * @param y Y position
-     * @param size Text size
+     * @brief Initialize storage systems
+     * @return true if successful
      */
-    void draw_text(const String& text, int x, int y, int size = 1);
+    bool initializeStorage();
     
     /**
-     * @brief Draw progress bar
-     * @param x X position
-     * @param y Y position
-     * @param width Width of progress bar
-     * @param height Height of progress bar
-     * @param progress Progress percentage (0-100)
+     * @brief Initialize communication systems
+     * @return true if successful
      */
-    void draw_progress_bar(int x, int y, int width, int height, int progress);
+    bool initializeCommunication();
     
     /**
-     * @brief Update display with current content
+     * @brief Initialize core services
+     * @return true if successful
      */
-    void update_display();
+    bool initializeServices();
     
     /**
-     * @brief Get stage name as string
-     * @param stage Boot stage
-     * @return Stage name
+     * @brief Initialize applications
+     * @return true if successful
      */
-    String get_stage_name(BootStage stage) const;
+    bool initializeApplications();
     
-    // Boot state
-    BootStage current_stage;
-    String current_message;
-    uint32_t boot_start_time;
-    uint32_t boot_complete_time;
-    bool boot_complete;
-    bool display_available;
+    /**
+     * @brief Validate system configuration
+     * @return true if valid
+     */
+    bool validateConfiguration();
     
-    // Boot statistics
-    struct BootStats {
-        uint32_t power_on_time;
-        uint32_t hardware_init_time;
-        uint32_t storage_init_time;
-        uint32_t display_init_time;
-        uint32_t connectivity_init_time;
-        uint32_t services_init_time;
-        uint32_t total_boot_time;
-        int restart_count;
-        String last_error;
-    } boot_stats;
+    /**
+     * @brief Check system resources
+     * @return true if sufficient
+     */
+    bool checkSystemResources();
     
-    // Display state for boot messages
-    bool basic_display_initialized;
+    /**
+     * @brief Initialize GPIO pins
+     * @return true if successful
+     */
+    bool initializeGPIO();
     
-    static const int DISPLAY_WIDTH = LCD_HOR_SIZE;
-    static const int DISPLAY_HEIGHT = LCD_VER_SIZE;
-    static const int TEXT_SIZE_SMALL = 1;
-    static const int TEXT_SIZE_MEDIUM = 2;
-    static const int TEXT_SIZE_LARGE = 3;
+    /**
+     * @brief Initialize I2C bus
+     * @return true if successful
+     */
+    bool initializeI2C();
+    
+    /**
+     * @brief Initialize SPI bus
+     * @return true if successful
+     */
+    bool initializeSPI();
+    
+    /**
+     * @brief Initialize UART interfaces
+     * @return true if successful
+     */
+    bool initializeUART();
+    
+    /**
+     * @brief Detect hardware components
+     * @return true if successful
+     */
+    bool detectHardware();
+    
+    /**
+     * @brief Initialize power management
+     * @return true if successful
+     */
+    bool initializePowerManagement();
+    
+    /**
+     * @brief Initialize sensors
+     * @return true if successful
+     */
+    bool initializeSensors();
+    
+    /**
+     * @brief Initialize connectivity modules
+     * @return true if successful
+     */
+    bool initializeConnectivity();
+    
+    /**
+     * @brief Set boot state
+     * @param state New boot state
+     */
+    void setState(BootState state);
+    
+    /**
+     * @brief Set error message
+     * @param message Error message
+     */
+    void setError(const String& message);
+    
+    /**
+     * @brief Log boot event
+     * @param event Event description
+     */
+    void logBootEvent(const String& event);
+    
+    /**
+     * @brief Check for emergency mode conditions
+     * @return true if emergency mode needed
+     */
+    bool checkEmergencyMode();
+    
+    /**
+     * @brief Perform emergency mode initialization
+     * @return true if successful
+     */
+    bool initializeEmergencyMode();
+
+private:
+    // ===== MEMBER VARIABLES =====
+    BootState current_state_;
+    String error_message_;
+    String status_message_;
+    uint32_t boot_start_time_;
+    uint32_t boot_time_;
+    uint8_t boot_progress_;
+    bool initialized_;
+    bool emergency_mode_;
+    
+    // Hardware detection results
+    bool display_detected_;
+    bool wifi_detected_;
+    bool modem_detected_;
+    bool lora_detected_;
+    bool gps_detected_;
+    bool sd_card_detected_;
+    bool battery_detected_;
+    
+    // System resource information
+    size_t free_heap_;
+    size_t free_psram_;
+    size_t flash_size_;
+    uint32_t cpu_freq_;
 };
 
-#endif // BOOT_MANAGER_H
+// ===== GLOBAL BOOT MANAGER INSTANCE =====
+extern BootManager* g_boot_manager;
+
+// ===== BOOT UTILITY FUNCTIONS =====
+
+/**
+ * @brief Initialize global boot manager
+ * @return true if successful
+ */
+bool initializeBootManager();
+
+/**
+ * @brief Get global boot manager instance
+ * @return Boot manager pointer
+ */
+BootManager* getBootManager();
+
+/**
+ * @brief System panic handler
+ * @param reason Panic reason
+ */
+void systemPanic(const String& reason);
+
+/**
+ * @brief Emergency mode handler
+ * @param reason Emergency reason
+ */
+void enterEmergencyMode(const String& reason);
+
+#endif // BOOT_MANAGER_H 

@@ -1,476 +1,302 @@
 /**
- * @file main.cpp
- * @brief T-Deck-Pro OS - Main Entry Point - CORRECTED VERSION
+ * @file main_corrected.cpp
+ * @brief T-Deck-Pro Main Application - Complete OS Integration
  * @author T-Deck-Pro OS Team
  * @date 2025
- * @note Completely rewritten to implement actual OS functionality
+ * @note Main application integrating all core components and applications
  */
 
 #include <Arduino.h>
-#include <WiFi.h>
-#include <esp_log.h>
-#include <esp_system.h>
-#include <esp_sleep.h>
-#include <esp_partition.h>
-#include <esp_heap_caps.h>
+#include <SPI.h>
+#include <SD.h>
+#include <SPIFFS.h>
+#include <ArduinoJson.h>
 
-// Core system includes - using corrected configurations
-#include "config/os_config_corrected.h"
-#include "core/hal/board_config_corrected.h"
-#include "core/boot_manager.h"
-#include "drivers/hardware_manager.h"
-#include "core/display/eink_manager_corrected.h"
-#include "core/communication/wifi_manager.h"
+// Core system includes
+#include "core/utils/logger.h"
 #include "core/storage/storage_manager.h"
 #include "core/launcher.h"
-#include "core/plugin_manager.h"
 
-// System state management
-// Removed: #include "core/error_handler.h"
-// Removed: #include "core/watchdog.h"
+// App includes
+#include "apps/file_manager_app.h"
+#include "apps/meshtastic_app.h"
+#include "apps/settings_app.h"
 
-// Logging tag
-static const char *TAG = "T-DECK-PRO-OS";
+// Hardware manager includes
+#include "core/display/eink_manager_corrected.h"
+#include "core/input/keyboard_manager.h"
+#include "core/communication/lora_manager.h"
 
-// ===== GLOBAL SYSTEM OBJECTS =====
-static BootManager* g_boot_manager = nullptr;
-static HardwareManager* g_hardware_manager = nullptr;
-static EinkManager* g_display_manager = nullptr;
-static TDeckOS::Communication::WiFiManager* g_wifi_manager = nullptr;
-static StorageManager* g_storage_manager = nullptr;
-static Launcher* g_launcher = nullptr;
-static PluginManager* g_plugin_manager = nullptr;
+// Test app includes
+#include "apps/hardware_test_app.h"
 
-// System state
-static volatile bool g_system_initialized = false;
-static volatile bool g_system_running = false;
-static uint32_t g_boot_start_time = 0;
+// ===== GLOBAL SYSTEM VARIABLES =====
+bool system_initialized = false;
+uint32_t system_start_time = 0;
+uint32_t last_heartbeat = 0;
 
-// ===== FORWARD DECLARATIONS =====
-void system_panic(const char* reason);
-bool initialize_core_systems();
-bool initialize_hardware();
-bool initialize_display();
-bool initialize_communication();
-bool initialize_applications();
-void system_main_loop();
-void handle_system_events();
-void handle_power_management();
-void print_system_info();
+// ===== SYSTEM INITIALIZATION =====
 
-using TDeckOS::Communication::WiFiManager;
-
-#ifndef LED_BUILTIN
-#define LED_BUILTIN 2 // Default for ESP32
-#endif
-#ifndef OUTPUT
-#define OUTPUT 1
-#endif
-#ifndef HIGH
-#define HIGH 1
-#endif
-#ifndef LOW
-#define LOW 0
-#endif
-
-#ifndef ESP_LOGE
-#define ESP_LOGE(TAG, fmt, ...) printf("[E] %s: " fmt "\n", TAG, ##__VA_ARGS__)
-#endif
-#ifndef ESP_LOGI
-#define ESP_LOGI(TAG, fmt, ...) printf("[I] %s: " fmt "\n", TAG, ##__VA_ARGS__)
-#endif
-
-#ifndef MALLOC_CAP_DEFAULT
-#define MALLOC_CAP_DEFAULT (1 << 0)
-#endif
-
-/**
- * @brief System panic handler - display error and halt
- */
-void system_panic(const char* reason) {
-    ESP_LOGE(TAG, "SYSTEM PANIC: %s", reason);
+bool initializeSystem() {
+    logInfo("SYSTEM", "Initializing T-Deck-Pro OS");
     
-    // Try to display error on screen if possible
-    if (g_display_manager && g_display_manager->isInitialized()) {
-        g_display_manager->showError("SYSTEM PANIC", reason);
-        g_display_manager->refresh();
-    }
+    // Initialize serial communication
+    Serial.begin(115200);
+    delay(1000);
     
-    // Flash LED pattern to indicate panic
-    pinMode(LED_BUILTIN, OUTPUT);
-    for (int i = 0; i < 20; i++) {
-        digitalWrite(LED_BUILTIN, HIGH);
-        delay(100);
-        digitalWrite(LED_BUILTIN, LOW);
-        delay(100);
-    }
+    logInfo("SYSTEM", "Serial communication initialized");
     
-    // Force restart after delay
-    delay(5000);
-    esp_restart();
-}
-
-/**
- * @brief Initialize core system components
- */
-bool initialize_core_systems() {
-    ESP_LOGI(TAG, "Initializing core systems...");
-    
-    // Initialize error handler first
-    // Removed: if (!ErrorHandler::initialize()) {
-    // Removed:     ESP_LOGE(TAG, "Failed to initialize error handler");
-    // Removed:     return false;
-    // Removed: }
-    
-    // Initialize watchdog
-    // Removed: if (!Watchdog::initialize(WATCHDOG_TIMEOUT_SEC)) {
-    // Removed:     ESP_LOGE(TAG, "Failed to initialize watchdog");
-    // Removed:     return false;
-    // Removed: }
-    
-    // Initialize system state manager
-    // Removed: if (!SystemState::initialize()) {
-    // Removed:     ESP_LOGE(TAG, "Failed to initialize system state");
-    // Removed:     return false;
-    // Removed: }
-    
-    ESP_LOGI(TAG, "Core systems initialized successfully");
-    return true;
-}
-
-/**
- * @brief Initialize hardware subsystem with corrected configuration
- */
-bool initialize_hardware() {
-    ESP_LOGI(TAG, "Initializing hardware subsystem...");
-    
-    // Create hardware manager with corrected configuration
-    g_hardware_manager = new HardwareManager();
-    if (!g_hardware_manager) {
-        ESP_LOGE(TAG, "Failed to create hardware manager");
+    // Initialize logger
+    if (!initializeLogger()) {
+        logError("SYSTEM", "Failed to initialize logger");
         return false;
     }
     
-    // Initialize hardware with corrected pins
-    if (!g_hardware_manager->initialize()) {
-        ESP_LOGE(TAG, "Failed to initialize hardware manager");
-        delete g_hardware_manager;
-        g_hardware_manager = nullptr;
-        return false;
-    }
-    
-    // Validate hardware configuration
-    // Removed: if (!g_hardware_manager->validateConfiguration()) {
-    // Removed:     ESP_LOGE(TAG, "Hardware configuration validation failed");
-    // Removed:     return false;
-    // Removed: }
-    
-    // Initialize power management
-    // Removed: if (!g_hardware_manager->initializePowerManagement()) {
-    // Removed:     ESP_LOGE(TAG, "Failed to initialize power management");
-    // Removed:     return false;
-    // Removed: }
-    
-    ESP_LOGI(TAG, "Hardware subsystem initialized successfully");
-    return true;
-}
-
-/**
- * @brief Initialize display subsystem with corrected E-ink configuration
- */
-bool initialize_display() {
-    ESP_LOGI(TAG, "Initializing display subsystem...");
-    
-    // Create display manager with corrected configuration
-    g_display_manager = new EinkManager();
-    if (!g_display_manager) {
-        ESP_LOGE(TAG, "Failed to create display manager");
-        return false;
-    }
-    
-    // Initialize E-ink display with correct hardware model and pins
-    if (!g_display_manager->init()) {
-        ESP_LOGE(TAG, "Failed to initialize display manager");
-        delete g_display_manager;
-        g_display_manager = nullptr;
-        return false;
-    }
-    
-    // Show boot splash screen
-    g_display_manager->showBootSplash("T-Deck-Pro OS", "Initializing...");
-    g_display_manager->refresh();
-    
-    ESP_LOGI(TAG, "Display subsystem initialized successfully");
-    return true;
-}
-
-/**
- * @brief Initialize communication subsystems
- */
-bool initialize_communication() {
-    ESP_LOGI(TAG, "Initializing communication subsystems...");
-    
-    // Initialize WiFi manager
-    g_wifi_manager = new TDeckOS::Communication::WiFiManager();
-    if (!g_wifi_manager) {
-        ESP_LOGE(TAG, "Failed to create WiFi manager");
-        return false;
-    }
-    
-    if (!g_wifi_manager->initialize()) {
-        ESP_LOGE(TAG, "Failed to initialize WiFi manager");
-        return false;
-    }
-    
-    // 4G modem initialization is handled by connectivity driver; no direct call here.
-    
-    // LoRa initialization is handled by connectivity driver; no direct call here.
-    
-    ESP_LOGI(TAG, "Communication subsystems initialized successfully");
-    return true;
-}
-
-/**
- * @brief Initialize application layer
- */
-bool initialize_applications() {
-    ESP_LOGI(TAG, "Initializing application layer...");
+    logInfo("SYSTEM", "Logger initialized");
     
     // Initialize storage manager
-    g_storage_manager = new StorageManager();
-    if (!g_storage_manager || !g_storage_manager->initialize()) {
-        ESP_LOGE(TAG, "Failed to initialize storage manager");
+    if (!initializeStorageManager()) {
+        logError("SYSTEM", "Failed to initialize storage manager");
         return false;
     }
     
-    // Initialize plugin manager
-    g_plugin_manager = new PluginManager();
-    if (!g_plugin_manager || !g_plugin_manager->initialize()) {
-        ESP_LOGE(TAG, "Failed to initialize plugin manager");
+    logInfo("SYSTEM", "Storage manager initialized");
+    
+    // Initialize launcher
+    if (!initializeLauncher()) {
+        logError("SYSTEM", "Failed to initialize launcher");
         return false;
     }
     
-    // Initialize launcher UI
-    g_launcher = new Launcher();
-    if (!g_launcher || !g_launcher->initialize()) {
-        ESP_LOGE(TAG, "Failed to initialize launcher");
+    logInfo("SYSTEM", "Launcher initialized");
+    
+    // Initialize hardware managers
+    if (!initializeEinkManager()) {
+        logError("SYSTEM", "Failed to initialize E-ink display manager");
         return false;
     }
     
-    // Scan and load available plugins
-    if (g_plugin_manager->scan_plugins() == 0) {
-         ESP_LOGE(TAG, "No plugins found or failed to load");
+    if (!initializeKeyboardManager()) {
+        logError("SYSTEM", "Failed to initialize keyboard manager");
+        return false;
     }
     
-    ESP_LOGI(TAG, "Application layer initialized successfully");
+    if (!initializeLoRaManager()) {
+        logError("SYSTEM", "Failed to initialize LoRa manager");
+        return false;
+    }
+    
+    logInfo("SYSTEM", "Hardware managers initialized");
+    
+    // Initialize core applications
+    if (!initializeFileManagerApp()) {
+        logError("SYSTEM", "Failed to initialize file manager app");
+        return false;
+    }
+    
+    if (!initializeMeshtasticApp()) {
+        logError("SYSTEM", "Failed to initialize meshtastic app");
+        return false;
+    }
+    
+    if (!initializeSettingsApp()) {
+        logError("SYSTEM", "Failed to initialize settings app");
+        return false;
+    }
+    
+    logInfo("SYSTEM", "Core applications initialized");
+    
+    // Initialize hardware test app
+    if (!initializeHardwareTestApp()) {
+        logError("SYSTEM", "Failed to initialize hardware test app");
+        return false;
+    }
+    
+    logInfo("SYSTEM", "Hardware test app initialized");
+    
+    system_initialized = true;
+    system_start_time = millis();
+    
+    logInfo("SYSTEM", "T-Deck-Pro OS initialization complete");
     return true;
 }
 
-/**
- * @brief Print comprehensive system information
- */
-void print_system_info() {
-    ESP_LOGI(TAG, "=== T-DECK-PRO OS SYSTEM INFO ===");
-    ESP_LOGI(TAG, "OS Version: %s", OS_VERSION);
-    ESP_LOGI(TAG, "Build Date: %s %s", __DATE__, __TIME__);
-    // ESP_LOGI(TAG, "ESP32-S3 Chip: Rev %d", ESP.getChipRevision()); // Not directly available
-    // ESP_LOGI(TAG, "CPU Frequency: %d MHz", ESP.getCpuFreqMHz()); // Requires rtc_clk_cpu_freq_get
-    // ESP_LOGI(TAG, "Flash Size: %d MB", ESP.getFlashChipSize() / (1024 * 1024)); // Requires spi_flash_get_chip_size
-    // ESP_LOGI(TAG, "PSRAM Size: %d MB", ESP.getPsramSize() / (1024 * 1024)); // Requires esp_psram_get_size
-    ESP_LOGI(TAG, "Free Heap: %d bytes", (int)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
-    ESP_LOGI(TAG, "Boot Time: %d ms", millis() - g_boot_start_time);
-    
-    if (g_hardware_manager) {
-        ESP_LOGI(TAG, "Hardware Status:");
-        ESP_LOGI(TAG, "  - Display: %s", g_hardware_manager->isDisplayAvailable() ? "OK" : "FAIL");
-        ESP_LOGI(TAG, "  - WiFi: %s", g_hardware_manager->isWiFiAvailable() ? "OK" : "FAIL");
-        ESP_LOGI(TAG, "  - 4G Modem: %s", g_hardware_manager->isModemAvailable() ? "OK" : "FAIL");
-        ESP_LOGI(TAG, "  - LoRa: %s", g_hardware_manager->isLoRaAvailable() ? "OK" : "FAIL");
-        ESP_LOGI(TAG, "  - GPS: %s", g_hardware_manager->isGPSAvailable() ? "OK" : "FAIL");
-        ESP_LOGI(TAG, "  - SD Card: %s", g_hardware_manager->isSDCardAvailable() ? "OK" : "FAIL");
-        ESP_LOGI(TAG, "  - Battery: %.2fV", g_hardware_manager->getBatteryVoltage());
-    }
-    ESP_LOGI(TAG, "================================");
-}
-
-/**
- * @brief Handle system events and messages
- */
-void handle_system_events() {
-    // Feed watchdog
-    // Removed: Watchdog::feed();
-    
-    // Process hardware events
-    if (g_hardware_manager) {
-        g_hardware_manager->processEvents();
-    }
-    
-    // Process display events
-    if (g_display_manager) {
-        // g_display_manager->processEvents(); // Removed: no such method
-    }
-    
-    // Process communication events
-    if (g_wifi_manager) {
-        g_wifi_manager->process();
-    }
-    
-    // Process application events
-    // Removed: if (g_launcher) { g_launcher->processEvents(); }
-    
-    // Process plugin events
-    if (g_plugin_manager) {
-        // g_plugin_manager->processEvents(); // Removed: no such method
-    }
-}
-
-/**
- * @brief Handle power management tasks
- */
-void handle_power_management() {
-    static uint32_t last_power_check = 0;
-    uint32_t now = millis();
-    
-    // Check power status every 30 seconds
-    if (now - last_power_check > 30000) {
-        if (g_hardware_manager) {
-            float battery_voltage = g_hardware_manager->getBatteryVoltage();
-            
-            // Update display battery indicator
-            if (g_display_manager) {
-                g_display_manager->updateBatteryStatus(battery_voltage);
-            }
-            
-            // Handle low battery
-            if (battery_voltage < BATTERY_LOW_THRESHOLD_MV) {
-                ESP_LOGE(TAG, "Low battery: %.2fV", battery_voltage);
-                if (g_display_manager) {
-                    g_display_manager->showLowBatteryWarning();
-                }
-                
-                // Enter power saving mode if critical
-                if (battery_voltage < BATTERY_CRITICAL_THRESHOLD_MV) {
-                    ESP_LOGE(TAG, "Critical battery: %.2fV - entering deep sleep", battery_voltage);
-                    // Removed: SystemState::enterDeepSleep();
-                }
-            }
+void processSystem() {
+    if (!system_initialized) {
+        if (!initializeSystem()) {
+            logCritical("SYSTEM", "System initialization failed");
+            return;
         }
-        last_power_check = now;
+    }
+    
+    // Process launcher (handles app switching and UI)
+    Launcher* launcher = getLauncher();
+    if (launcher) {
+        launcher->process();
+    }
+    
+    // Process logger
+    Logger* logger = getLogger();
+    if (logger) {
+        logger->process();
+    }
+    
+    // Process storage manager
+    StorageManager* storage = getStorageManager();
+    if (storage) {
+        storage->process();
+    }
+    
+    // Process hardware managers
+    EinkManager* eink = getEinkManager();
+    if (eink) {
+        eink->process();
+    }
+    
+    KeyboardManager* keyboard = getKeyboardManager();
+    if (keyboard) {
+        keyboard->process();
+    }
+    
+    LoRaManager* lora = getLoRaManager();
+    if (lora) {
+        lora->process();
+    }
+    
+    // Process hardware test app
+    HardwareTestApp* hw_test = getHardwareTestApp();
+    if (hw_test) {
+        hw_test->process();
+    }
+    
+    // System heartbeat
+    uint32_t now = millis();
+    if (now - last_heartbeat > 30000) { // Every 30 seconds
+        logInfo("SYSTEM", "System heartbeat - Uptime: " + String(now / 1000) + "s");
+        last_heartbeat = now;
     }
 }
 
-/**
- * @brief Main system loop
- */
-void system_main_loop() {
-    ESP_LOGI(TAG, "Entering main system loop");
-    g_system_running = true;
-    
-    // Update display to show system ready
-    if (g_display_manager) {
-        g_display_manager->showSystemReady();
-        g_display_manager->refresh();
-    }
-    
-    // Show launcher
-    if (g_launcher) {
-        g_launcher->show();
-    }
-    
-    while (g_system_running) {
-        // Handle system events
-        handle_system_events();
-        
-        // Handle power management
-        handle_power_management();
-        
-        // Small delay to prevent overwhelming the system
-        delay(10);
-    }
-}
+// ===== ARDUINO SETUP AND LOOP =====
 
-/**
- * @brief Arduino setup function - OS initialization
- */
 void setup() {
-    g_boot_start_time = millis();
-    
-    // Initialize serial console
-    Serial.begin(115200);
-    
-    // Wait for serial connection in debug builds
-    #ifdef DEBUG_MODE
-    while (!Serial && (millis() - g_boot_start_time) < 5000) {
-        delay(100);
-    }
-    #endif
-    
-    ESP_LOGI(TAG, "=== T-DECK-PRO OS BOOT SEQUENCE ===");
-    ESP_LOGI(TAG, "Starting T-Deck-Pro OS v%s", OS_VERSION);
-    
-    // Initialize boot manager
-    g_boot_manager = new BootManager();
-    if (!g_boot_manager || !g_boot_manager->initialize()) {
-        system_panic("Boot manager initialization failed");
-        return;
+    // Initialize system
+    if (!initializeSystem()) {
+        Serial.println("FATAL: System initialization failed");
+        while (1) {
+            delay(1000);
+        }
     }
     
-    // Phase 1: Core Systems
-    ESP_LOGI(TAG, "Boot Phase 1: Core Systems");
-    if (!initialize_core_systems()) {
-        system_panic("Core system initialization failed");
-        return;
-    }
-    
-    // Phase 2: Hardware
-    ESP_LOGI(TAG, "Boot Phase 2: Hardware");
-    if (!initialize_hardware()) {
-        system_panic("Hardware initialization failed");
-        return;
-    }
-    
-    // Phase 3: Display
-    ESP_LOGI(TAG, "Boot Phase 3: Display");
-    if (!initialize_display()) {
-        system_panic("Display initialization failed");
-        return;
-    }
-    
-    // Phase 4: Communication
-    ESP_LOGI(TAG, "Boot Phase 4: Communication");
-    if (!initialize_communication()) {
-        system_panic("Communication initialization failed");
-        return;
-    }
-    
-    // Phase 5: Applications
-    ESP_LOGI(TAG, "Boot Phase 5: Applications");
-    if (!initialize_applications()) {
-        system_panic("Application initialization failed");
-        return;
-    }
-    
-    // Mark system as initialized
-    g_system_initialized = true;
-    
-    // Print system information
-    print_system_info();
-    
-    ESP_LOGI(TAG, "=== BOOT COMPLETE - SYSTEM READY ===");
+    Serial.println("T-Deck-Pro OS Ready");
 }
 
-/**
- * @brief Arduino loop function - Main OS loop
- */
 void loop() {
-    // Ensure system is properly initialized
-    if (!g_system_initialized) {
-        ESP_LOGE(TAG, "System not initialized, restarting...");
-        delay(1000);
-        ESP.restart();
-        return;
+    // Main system processing loop
+    processSystem();
+    
+    // Small delay to prevent watchdog issues
+    delay(10);
+}
+
+// ===== SYSTEM UTILITY FUNCTIONS =====
+
+String getSystemStatus() {
+    DynamicJsonDocument doc(2048);
+    
+    doc["system_initialized"] = system_initialized;
+    doc["uptime"] = millis() / 1000;
+    doc["free_heap"] = ESP.getFreeHeap();
+    doc["min_free_heap"] = ESP.getMinFreeHeap();
+    doc["max_alloc_heap"] = ESP.getMaxAllocHeap();
+    
+    // Get launcher status
+    Launcher* launcher = getLauncher();
+    if (launcher) {
+        JsonObject launcher_status = doc.createNestedObject("launcher");
+        DynamicJsonDocument launcher_doc(1024);
+        launcher_doc.parse(launcher->getLauncherStatus());
+        launcher_status.set(launcher_doc);
     }
     
-    // Run main system loop
-    system_main_loop();
+    // Get logger status
+    Logger* logger = getLogger();
+    if (logger) {
+        JsonObject logger_status = doc.createNestedObject("logger");
+        DynamicJsonDocument logger_doc(1024);
+        logger_doc.parse(logger->getStatistics());
+        logger_status.set(logger_doc);
+    }
+    
+    // Get storage status
+    StorageManager* storage = getStorageManager();
+    if (storage) {
+        JsonObject storage_status = doc.createNestedObject("storage");
+        StorageStats spiffs_stats = storage->getStats(StorageType::SPIFFS);
+        StorageStats sd_stats = storage->getStats(StorageType::SD_CARD);
+        
+        JsonObject spiffs = storage_status.createNestedObject("spiffs");
+        spiffs["total_space"] = spiffs_stats.total_space;
+        spiffs["used_space"] = spiffs_stats.used_space;
+        spiffs["free_space"] = spiffs_stats.free_space;
+        spiffs["file_count"] = spiffs_stats.file_count;
+        
+        JsonObject sd = storage_status.createNestedObject("sd_card");
+        sd["total_space"] = sd_stats.total_space;
+        sd["used_space"] = sd_stats.used_space;
+        sd["free_space"] = sd_stats.free_space;
+        sd["file_count"] = sd_stats.file_count;
+    }
+    
+    // Get hardware manager status
+    EinkManager* eink = getEinkManager();
+    if (eink) {
+        JsonObject eink_status = doc.createNestedObject("eink");
+        DynamicJsonDocument eink_doc(1024);
+        eink_doc.parse(eink->getDisplayStatus());
+        eink_status.set(eink_doc);
+    }
+    
+    KeyboardManager* keyboard = getKeyboardManager();
+    if (keyboard) {
+        JsonObject keyboard_status = doc.createNestedObject("keyboard");
+        DynamicJsonDocument keyboard_doc(1024);
+        keyboard_doc.parse(keyboard->getStatus());
+        keyboard_status.set(keyboard_doc);
+    }
+    
+    LoRaManager* lora = getLoRaManager();
+    if (lora) {
+        JsonObject lora_status = doc.createNestedObject("lora");
+        DynamicJsonDocument lora_doc(1024);
+        lora_doc.parse(lora->getStatus());
+        lora_status.set(lora_doc);
+    }
+    
+    // Get hardware test app status
+    HardwareTestApp* hw_test = getHardwareTestApp();
+    if (hw_test) {
+        JsonObject hw_test_status = doc.createNestedObject("hardware_test");
+        DynamicJsonDocument hw_test_doc(1024);
+        hw_test_doc.parse(hw_test->getStatus());
+        hw_test_status.set(hw_test_doc);
+    }
+    
+    String output;
+    serializeJson(doc, output);
+    return output;
 }
+
+void printSystemStatus() {
+    Serial.println("=== T-Deck-Pro System Status ===");
+    Serial.println(getSystemStatus());
+    Serial.println("=================================");
+}
+
+uint32_t getSystemUptime() {
+    return millis() / 1000;
+}
+
+bool isSystemInitialized() {
+    return system_initialized;
+} 
