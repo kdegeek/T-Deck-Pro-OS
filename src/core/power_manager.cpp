@@ -525,7 +525,7 @@ WakeupSource PowerManager::determineWakeupSource() {
         case ESP_SLEEP_WAKEUP_WIFI:
             return WakeupSource::WIFI;
         default:
-            return WakeupSource::EXTERNAL;
+            return WakeupSource::EXT_INTERRUPT;
     }
 }
 

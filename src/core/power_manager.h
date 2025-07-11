@@ -49,7 +49,7 @@ enum class WakeupSource {
     GPIO,              // GPIO interrupt wakeup
     UART,              // UART activity wakeup
     WIFI,              // WiFi activity wakeup
-    EXTERNAL           // External interrupt wakeup
+    EXT_INTERRUPT      // External interrupt wakeup
 };
 
 /**

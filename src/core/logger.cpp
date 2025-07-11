@@ -159,10 +159,10 @@ void Logger::enableOutput(LogOutput output, bool enabled) {
 }
 
 void Logger::setOutputs(bool serial, bool sd, bool mqtt, bool display) {
-    output_enabled[(int)LogOutput::SERIAL] = serial;
+    output_enabled[(int)LogOutput::LOG_SERIAL] = serial;
     output_enabled[(int)LogOutput::SD_CARD] = sd;
     output_enabled[(int)LogOutput::MQTT] = mqtt;
-    output_enabled[(int)LogOutput::DISPLAY] = display;
+    output_enabled[(int)LogOutput::LOG_DISPLAY] = display;
 }
 
 void Logger::addOutputHandler(std::unique_ptr<LogOutputHandler> handler) {
@@ -290,7 +290,7 @@ void Logger::initializeDefaultHandlers() {
         auto sd_handler = std::make_unique<SDLogHandler>();
         output_handlers.push_back(std::move(sd_handler));
     }
-    
+
     // Add MQTT handler if enabled
     if (output_enabled[(int)LogOutput::MQTT]) {
         auto mqtt_handler = std::make_unique<MQTTLogHandler>();
@@ -299,9 +299,9 @@ void Logger::initializeDefaultHandlers() {
         }
         output_handlers.push_back(std::move(mqtt_handler));
     }
-    
+
     // Add display handler if enabled
-    if (output_enabled[(int)LogOutput::DISPLAY]) {
+    if (output_enabled[(int)LogOutput::LOG_DISPLAY]) {
         auto display_handler = std::make_unique<DisplayLogHandler>();
         if (hardware_manager) {
             display_handler->setHardwareManager(hardware_manager);

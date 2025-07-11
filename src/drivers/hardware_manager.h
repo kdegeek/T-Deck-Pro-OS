@@ -33,14 +33,14 @@ enum class HardwareStatus {
     INITIALIZING,
     READY,
     ERROR,
-    DISABLED
+    POWER_OFF
 };
 
 /**
  * @brief Hardware component identifiers
  */
 enum class HardwareComponent {
-    DISPLAY,
+    EPD_DISPLAY,
     TOUCH,
     KEYBOARD,
     LORA,
@@ -420,7 +420,7 @@ private:
     SX1262* lora_radio = nullptr;
     TinyGPSPlus* gps_parser = nullptr;
     XPowersPPM* power_manager = nullptr;
-    BQ27220* battery_monitor = nullptr;
+    // BQ27220* battery_monitor = nullptr; // Will be implemented in Phase 2
 
     // Component status tracking
     HardwareStatus component_status[13];
@@ -445,6 +445,8 @@ private:
     // Private utility methods
     void logError(const char* component, const char* message);
     void logInfo(const char* component, const char* message);
+    void logErrorf(const char* component, const char* format, ...);
+    void logInfof(const char* component, const char* format, ...);
     bool enableComponentPower(HardwareComponent component);
     bool disableComponentPower(HardwareComponent component);
     void updateComponentStatus();

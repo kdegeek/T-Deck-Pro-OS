@@ -137,7 +137,7 @@ void HardwareManager::update() {
 // === DISPLAY MANAGEMENT ===
 
 bool HardwareManager::initDisplay() {
-    component_status[(int)HardwareComponent::DISPLAY] = HardwareStatus::INITIALIZING;
+    component_status[(int)HardwareComponent::EPD_DISPLAY] = HardwareStatus::INITIALIZING;
     
     try {
         // Create display driver instance
@@ -147,7 +147,7 @@ bool HardwareManager::initDisplay() {
 
         if (!display_driver) {
             logError("Display", "Failed to create display driver");
-            component_status[(int)HardwareComponent::DISPLAY] = HardwareStatus::ERROR;
+            component_status[(int)HardwareComponent::EPD_DISPLAY] = HardwareStatus::ERROR;
             return false;
         }
 
@@ -155,23 +155,23 @@ bool HardwareManager::initDisplay() {
         display_driver->setRotation(0);
         display_driver->setFullWindow();
         display_driver->firstPage();
-        
+
         do {
             display_driver->fillScreen(GxEPD_WHITE);
         } while (display_driver->nextPage());
 
-        component_status[(int)HardwareComponent::DISPLAY] = HardwareStatus::READY;
+        component_status[(int)HardwareComponent::EPD_DISPLAY] = HardwareStatus::READY;
         logInfo("Display", "E-paper display initialized successfully");
         return true;
     } catch (...) {
         logError("Display", "Exception during display initialization");
-        component_status[(int)HardwareComponent::DISPLAY] = HardwareStatus::ERROR;
+        component_status[(int)HardwareComponent::EPD_DISPLAY] = HardwareStatus::ERROR;
         return false;
     }
 }
 
 bool HardwareManager::updateDisplay(const char* text, int16_t x, int16_t y) {
-    if (!display_driver || component_status[(int)HardwareComponent::DISPLAY] != HardwareStatus::READY) {
+    if (!display_driver || component_status[(int)HardwareComponent::EPD_DISPLAY] != HardwareStatus::READY) {
         return false;
     }
 
@@ -188,7 +188,7 @@ bool HardwareManager::updateDisplay(const char* text, int16_t x, int16_t y) {
 }
 
 bool HardwareManager::refreshDisplay(DisplayRefreshMode mode) {
-    if (!display_driver || component_status[(int)HardwareComponent::DISPLAY] != HardwareStatus::READY) {
+    if (!display_driver || component_status[(int)HardwareComponent::EPD_DISPLAY] != HardwareStatus::READY) {
         return false;
     }
 
@@ -209,7 +209,7 @@ bool HardwareManager::refreshDisplay(DisplayRefreshMode mode) {
 }
 
 void HardwareManager::clearDisplay() {
-    if (!display_driver || component_status[(int)HardwareComponent::DISPLAY] != HardwareStatus::READY) {
+    if (!display_driver || component_status[(int)HardwareComponent::EPD_DISPLAY] != HardwareStatus::READY) {
         return;
     }
 
@@ -229,11 +229,11 @@ void HardwareManager::setDisplayPower(bool enabled) {
     if (enabled) {
         // Power on display
         display_driver->init();
-        component_status[(int)HardwareComponent::DISPLAY] = HardwareStatus::READY;
+        component_status[(int)HardwareComponent::EPD_DISPLAY] = HardwareStatus::READY;
     } else {
         // Power off display
         display_driver->hibernate();
-        component_status[(int)HardwareComponent::DISPLAY] = HardwareStatus::DISABLED;
+        component_status[(int)HardwareComponent::EPD_DISPLAY] = HardwareStatus::POWER_OFF;
     }
 }
 
@@ -379,16 +379,36 @@ void HardwareManager::setLogger(Logger* logger_instance) {
 
 void HardwareManager::logError(const char* component, const char* message) {
     if (logger) {
-        // Will use logger when available
+        logger->error(component, "%s", message);
+    } else {
+        SerialMon.printf("[ERROR] %s: %s\n", component, message);
     }
-    SerialMon.printf("[ERROR] %s: %s\n", component, message);
 }
 
 void HardwareManager::logInfo(const char* component, const char* message) {
     if (logger) {
-        // Will use logger when available
+        logger->info(component, "%s", message);
+    } else {
+        SerialMon.printf("[INFO] %s: %s\n", component, message);
     }
-    SerialMon.printf("[INFO] %s: %s\n", component, message);
+}
+
+void HardwareManager::logErrorf(const char* component, const char* format, ...) {
+    char buffer[256];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    logError(component, buffer);
+}
+
+void HardwareManager::logInfof(const char* component, const char* format, ...) {
+    char buffer[256];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    logInfo(component, buffer);
 }
 
 bool HardwareManager::initKeyboard() {
@@ -513,7 +533,7 @@ bool HardwareManager::initWiFi() {
     WiFi.disconnect(true);  // Clear any stored credentials
 
     // Set country code for regulatory compliance (default to US)
-    WiFi.setCountry("US");
+    // WiFi.setCountry("US"); // Not available in this ESP32 version
 
     // Configure WiFi power management
     WiFi.setSleep(WIFI_PS_MIN_MODEM);  // Minimum power save mode
@@ -543,7 +563,7 @@ bool HardwareManager::connectWiFi(const char* ssid, const char* password) {
         return false;
     }
 
-    logInfo("WiFi", "Attempting to connect to WiFi network: %s", ssid);
+    logInfof("WiFi", "Attempting to connect to WiFi network: %s", ssid);
 
     // Disconnect from any existing connection
     if (WiFi.isConnected()) {
@@ -992,8 +1012,8 @@ bool HardwareManager::runDiagnostics() {
                 status_str = "ERROR";
                 all_passed = false;
                 break;
-            case HardwareStatus::DISABLED:
-                status_str = "DISABLED";
+            case HardwareStatus::POWER_OFF:
+                status_str = "POWER_OFF";
                 break;
             case HardwareStatus::NOT_INITIALIZED:
                 status_str = "NOT_INIT";

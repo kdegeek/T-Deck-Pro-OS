@@ -12,6 +12,7 @@
 #include <Arduino.h>
 #include <vector>
 #include <functional>
+#include <memory>
 #include <mutex>
 
 // Forward declarations
@@ -32,10 +33,10 @@ enum class LogLevel {
  * @brief Log output destinations
  */
 enum class LogOutput {
-    SERIAL = 0,
+    LOG_SERIAL = 0,
     SD_CARD = 1,
     MQTT = 2,
-    DISPLAY = 3
+    LOG_DISPLAY = 3
 };
 
 /**
