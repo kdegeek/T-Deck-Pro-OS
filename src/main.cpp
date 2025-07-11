@@ -1,491 +1,300 @@
 /**
- * @file      test_touchpad.h
- * @author    ShallowGreen123
+ * @file      main.cpp
+ * @author    T-Deck-Pro OS Team
  * @license   MIT
- * @copyright Copyright (c) 2023  Shenzhen Xin Yuan Electronic Technology Co., Ltd
- * @date      2024-05-27
- *
+ * @copyright Copyright (c) 2025
+ * @date      2025-01-11
+ * @brief     T-Deck-Pro OS Main Application - Phase 1 Implementation
  */
-
 
 #include <Arduino.h>
 #include "utilities.h"
-#include <GxEPD2_BW.h>
-#include <TouchDrvCSTXXX.hpp>
-#include <TinyGPS++.h>
-#include "lvgl.h"
-#include "ui_deckpro.h"
-#include <Fonts/FreeMonoBold9pt7b.h>
-#include "factory.h"
-#include "peripheral.h"
 
-TinyGsm modem(SerialAT);
-TaskHandle_t a7682_handle;
+// Phase 1 Core Components
+#include "drivers/hardware_manager.h"
+#include "core/logger.h"
+#include "core/power_manager.h"
 
-XPowersPPM PPM;
-BQ27220 bq27220;
-Audio audio;
+// Configuration
+#include "config/os_config.h"
 
-TouchDrvCSTXXX touch;
-GxEPD2_BW<GxEPD2_310_GDEQ031T10, GxEPD2_310_GDEQ031T10::HEIGHT> display(GxEPD2_310_GDEQ031T10(BOARD_EPD_CS, BOARD_EPD_DC, BOARD_EPD_RST, BOARD_EPD_BUSY)); // GDEQ031T10 240x320, UC8253, (no inking, backside mark KEGMO 3100)
+// Global system state
+bool system_initialized = false;
+uint32_t last_status_update = 0;
+uint32_t boot_time = 0;
 
-uint8_t *decodebuffer = NULL;
-lv_timer_t *flush_timer = NULL;
-int disp_refr_mode = DISP_REFR_MODE_PART;
-const char HelloWorld[] = "T-Deck-Pro!";
+// Test configuration (will be moved to config system in Phase 3)
+const char* test_wifi_ssid = "YourWiFiNetwork";
+const char* test_wifi_password = "YourPassword";
 
-bool peri_init_st[E_PERI_NUM_MAX] = {0};
+/**
+ * @brief Initialize the T-Deck-Pro OS system
+ * @return true if initialization successful
+ */
+bool initializeSystem() {
+    LOG_INFO("System", "Starting T-Deck-Pro OS initialization...");
 
-/*********************************************************************************
- *                              STATIC PROTOTYPES
- * *******************************************************************************/
-static bool ink_screen_init()
-{
-    // SPI.begin(BOARD_SPI_SCK, -1, BOARD_SPI_MOSI, BOARD_EPD_CS);
-    display.init(115200, true, 2, false);
-    //Serial.println("helloWorld");
-    display.setRotation(0);
-    display.setFont(&FreeMonoBold9pt7b);
-    if (display.epd2.WIDTH < 104) display.setFont(0);
-    display.setTextColor(GxEPD_BLACK);
-    int16_t tbx, tby; uint16_t tbw, tbh;
-    display.getTextBounds(HelloWorld, 0, 0, &tbx, &tby, &tbw, &tbh);
-    // center bounding box by transposition of origin:
-    uint16_t x = ((display.width() - tbw) / 2) - tbx;
-    uint16_t y = ((display.height() - tbh) / 2) - tby;
-    display.setFullWindow();
-    display.firstPage();
-    do
-    {
-        display.fillScreen(GxEPD_WHITE);
-        display.setCursor(x, y);
-        display.print(HelloWorld);
-    }
-    while (display.nextPage());
-    display.hibernate();
-    return true;
-}
+    // Phase 1: Initialize core components in order
 
-static void flush_timer_cb(lv_timer_t *t)
-{
-    static int idx = 0;
-    lv_disp_t *disp = lv_disp_get_default();
-    if(disp->rendering_in_progress == false) {
-        lv_coord_t w = LV_HOR_RES;
-        lv_coord_t h = LV_VER_RES;
-
-        if(disp_refr_mode == DISP_REFR_MODE_PART) {
-            display.setPartialWindow(0, 0, w, h);
-        } else if(disp_refr_mode == DISP_REFR_MODE_FULL){
-            display.setFullWindow();
-        }
-
-        display.firstPage();
-        do {
-            display.drawInvertedBitmap(0, 0, decodebuffer, w, h - 3, GxEPD_BLACK);
-        }
-        while (display.nextPage());
-        display.hibernate();
-        
-        Serial.printf("flush_timer_cb:%d, %s\n", idx++, (disp_refr_mode == 0 ?"full":"part"));
-
-        disp_refr_mode = DISP_REFR_MODE_PART;
-        lv_timer_pause(flush_timer);
-    }
-}
-
-static void dips_render_start_cb(struct _lv_disp_drv_t * disp_drv)
-{
-    if(flush_timer == NULL) {
-        flush_timer = lv_timer_create(flush_timer_cb, 10, NULL);
-    } else {
-        lv_timer_resume(flush_timer);
-    }
-}
-
-static void disp_flush(lv_disp_drv_t * disp_drv, const lv_area_t * area, lv_color_t * color_p)
-{
-    uint32_t w = (area->x2 - area->x1);
-    uint32_t h = (area->y2 - area->y1);
-
-    uint16_t epd_idx = 0;
-
-    union flush_buf_pixel pixel;
-
-    for(int i = 0; i < w * h; i += 8) {
-        pixel.bit.b1 = (color_p + i + 7)->full;
-        pixel.bit.b2 = (color_p + i + 6)->full;
-        pixel.bit.b3 = (color_p + i + 5)->full;
-        pixel.bit.b4 = (color_p + i + 4)->full;
-        pixel.bit.b5 = (color_p + i + 3)->full;
-        pixel.bit.b6 = (color_p + i + 2)->full;
-        pixel.bit.b7 = (color_p + i + 1)->full;
-        pixel.bit.b8 = (color_p + i + 0)->full;
-        decodebuffer[epd_idx] = pixel.full;
-        epd_idx++;
-    }
-
-    // Serial.printf("x1=%d, y1=%d, x2=%d, y2=%d\n", area->x1, area->y1, area->x2, area->y2);
-
-    /*IMPORTANT!!!
-     *Inform the graphics library that you are ready with the flushing*/
-    lv_disp_flush_ready(disp_drv);
-}
-
-static void touchpad_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
-{
-    static lv_coord_t last_x = 0;
-    static lv_coord_t last_y = 0;
-
-    uint8_t touched = touch.getPoint(&last_x, &last_y, 1);
-    if(touched) {
-        data->state = LV_INDEV_STATE_PR;
-
-        Serial.printf("x = %d, y = %d\n", last_x, last_y);
-    } else {
-        data->state = LV_INDEV_STATE_REL;
-    }
-    /*Set the last pressed coordinates*/
-    data->point.x = last_x;
-    data->point.y = last_y;
-}
-
-static void lvgl_init(void)
-{
-    lv_init();
-
-    static lv_disp_draw_buf_t draw_buf_dsc_1;
-    lv_color_t *buf_1 = (lv_color_t *)ps_calloc(sizeof(lv_color_t), DISP_BUF_SIZE);
-    lv_color_t *buf_2 = (lv_color_t *)ps_calloc(sizeof(lv_color_t), DISP_BUF_SIZE);
-    lv_disp_draw_buf_init(&draw_buf_dsc_1, buf_1, buf_2, LCD_HOR_SIZE * LCD_VER_SIZE);
-    decodebuffer = (uint8_t *)ps_calloc(sizeof(uint8_t), DISP_BUF_SIZE);
-    // lv_disp_draw_buf_init(&draw_buf, lv_disp_buf_p, NULL, DISP_BUF_SIZE);
-
-    static lv_disp_drv_t disp_drv;
-    lv_disp_drv_init(&disp_drv);
-    disp_drv.hor_res = LCD_HOR_SIZE;
-    disp_drv.ver_res = LCD_VER_SIZE;
-    disp_drv.flush_cb = disp_flush;
-    disp_drv.render_start_cb = dips_render_start_cb;
-    disp_drv.draw_buf = &draw_buf_dsc_1;
-    // disp_drv.rounder_cb = display_driver_rounder_cb;
-    disp_drv.full_refresh = 1;
-
-    lv_disp_drv_register(&disp_drv);
-
-    /*------------------
-     * Touchpad
-     * -----------------*/
-    /*Register a touchpad input device*/
-    static lv_indev_drv_t indev_drv;
-    lv_indev_drv_init(&indev_drv);
-    indev_drv.type = LV_INDEV_TYPE_POINTER;
-    indev_drv.read_cb = touchpad_read;
-    lv_indev_drv_register(&indev_drv);
-}
-
-static bool bq25896_init(void)
-{
-    // BQ25896 --- 0x6B
-    Wire.beginTransmission(BOARD_I2C_ADDR_BQ25896);
-    if (Wire.endTransmission() == 0)
-    {
-        // battery_25896.begin();
-        PPM.init(Wire, BOARD_I2C_SDA, BOARD_I2C_SCL, BOARD_I2C_ADDR_BQ25896);
-        // Set the minimum operating voltage. Below this voltage, the PPM will protect
-        PPM.setSysPowerDownVoltage(3300);
-
-        // Set input current limit, default is 500mA
-        PPM.setInputCurrentLimit(3250);
-
-        Serial.printf("getInputCurrentLimit: %d mA\n",PPM.getInputCurrentLimit());
-
-        // Disable current limit pin
-        PPM.disableCurrentLimitPin();
-
-        // Set the charging target voltage, Range:3840 ~ 4608mV ,step:16 mV
-        PPM.setChargeTargetVoltage(4208);
-
-        // Set the precharge current , Range: 64mA ~ 1024mA ,step:64mA
-        PPM.setPrechargeCurr(64);
-
-        // The premise is that Limit Pin is disabled, or it will only follow the maximum charging current set by Limi tPin.
-        // Set the charging current , Range:0~5056mA ,step:64mA
-        PPM.setChargerConstantCurr(832);
-
-        // Get the set charging current
-        PPM.getChargerConstantCurr();
-        Serial.printf("getChargerConstantCurr: %d mA\n",PPM.getChargerConstantCurr());
-
-        PPM.enableADCMeasure();
-
-        PPM.enableCharge();
-
-        // Turn off charging function
-        // If USB is used as the only power input, it is best to turn off the charging function,
-        // otherwise the VSYS power supply will have a sawtooth wave, affecting the discharge output capability.
-        // PPM.disableCharge();
-
-
-        // The OTG function needs to enable OTG, and set the OTG control pin to HIGH
-        // After OTG is enabled, if an external power supply is plugged in, OTG will be turned off
-
-        PPM.enableOTG();
-        PPM.disableOTG();
-        // pinMode(OTG_ENABLE_PIN, OUTPUT);
-        // digitalWrite(OTG_ENABLE_PIN, HIGH);
-
-        return true;
-    }
-    return false;
-}
-
-static bool bq27220_init(void)
-{
-    bool ret = bq27220.init();
-    // if(ret) 
-    //     bq27220.reset();
-    return ret;
-}
-
-static bool sd_care_init(void)
-{
-    if(!SD.begin(BOARD_SD_CS)){
-        Serial.println("[SD CARD] Card Mount Failed");
+    // 1. Initialize Logger first (for debugging)
+    if (!Log.init()) {
+        Serial.println("FATAL: Logger initialization failed");
         return false;
     }
 
-    uint64_t cardSize = SD.cardSize() / (1024 * 1024);
-    Serial.printf("SD Card Size: %lluMB\n", cardSize);
+    LOG_INFO("System", "Logger initialized successfully");
 
-    uint64_t totalSize = SD.totalBytes() / (1024 * 1024);
-    Serial.printf("SD Card Total: %lluMB\n", totalSize);
+    // 2. Initialize Hardware Manager
+    if (!Hardware.init()) {
+        LOG_ERROR("System", "Hardware initialization failed");
+        return false;
+    }
 
-    uint64_t usedSize = SD.usedBytes() / (1024 * 1024);
-    Serial.printf("SD Card Used: %lluMB\n", usedSize);
+    // Set logger reference in hardware manager
+    Hardware.setLogger(&Log);
+    LOG_INFO("System", "Hardware manager initialized successfully");
+
+    // 3. Initialize Power Manager
+    if (!Power.init()) {
+        LOG_ERROR("System", "Power management initialization failed");
+        return false;
+    }
+
+    // Set hardware reference in power manager
+    Power.setHardwareManager(&Hardware);
+    Power.setLogger(&Log);
+    LOG_INFO("System", "Power manager initialized successfully");
+
+    // 4. Run hardware diagnostics
+    if (!Hardware.runDiagnostics()) {
+        LOG_WARN("System", "Some hardware components failed diagnostics");
+    }
+
+    // 5. Display welcome message
+    Hardware.updateDisplay("T-Deck-Pro OS\nPhase 1 Active\n\nInitializing...", 10, 30);
+    Hardware.refreshDisplay();
+
+    LOG_INFO("System", "System initialization completed successfully");
     return true;
 }
 
-static void a7682_task(void *param)
-{
-    vTaskSuspend(a7682_handle);
-    while (1)
-    {
-        while (SerialAT.available())
-        {
-            SerialMon.write(SerialAT.read());
-        }
-        while (SerialMon.available())
-        {
-            SerialAT.write(SerialMon.read());
-        }
-        delay(1);
+/**
+ * @brief Test WiFi connectivity
+ */
+void testWiFiConnection() {
+    LOG_INFO("WiFi", "Testing WiFi connectivity...");
+
+    // Scan for networks
+    auto networks = Hardware.scanWiFiNetworks();
+    LOG_INFO("WiFi", "Found %d networks", networks.size());
+
+    // Try to connect to test network
+    if (Hardware.connectWiFi(test_wifi_ssid, test_wifi_password)) {
+        LOG_INFO("WiFi", "WiFi connection test successful");
+
+        // Display connection info
+        String wifi_info = Hardware.getWiFiInfo();
+        Hardware.updateDisplay(wifi_info.c_str(), 10, 30);
+        Hardware.refreshDisplay();
+
+        delay(5000); // Show info for 5 seconds
+    } else {
+        LOG_ERROR("WiFi", "WiFi connection test failed");
+        Hardware.updateDisplay("WiFi Test Failed\nCheck credentials", 10, 30);
+        Hardware.refreshDisplay();
     }
 }
 
-static bool A7682E_init(void)
-{
-    Serial.println("Place your board outside to catch satelite signal");
+/**
+ * @brief Test power management features
+ */
+void testPowerManagement() {
+    LOG_INFO("Power", "Testing power management...");
 
-    // Set module baud rate and UART pins
-    SerialAT.begin(115200, SERIAL_8N1, BOARD_A7682E_TXD, BOARD_A7682E_RXD);
+    // Get power statistics
+    auto stats = Power.getPowerStats();
 
-    Serial.println("Start modem...");
+    String power_info = "Power Stats:\n";
+    power_info += "Uptime: " + String(stats.uptime_ms / 1000) + "s\n";
+    power_info += "CPU: " + String(stats.cpu_frequency_mhz) + "MHz\n";
+    power_info += "Battery: " + String(stats.battery_percentage) + "%\n";
+    power_info += "Mode: " + String((int)Power.getPowerMode()) + "\n";
 
-    // power on
-    digitalWrite(BOARD_A7682E_PWRKEY, LOW);
-    delay(10);
-    digitalWrite(BOARD_A7682E_PWRKEY, HIGH);
-    delay(50);
-    digitalWrite(BOARD_A7682E_PWRKEY, LOW);
-    delay(10);
+    Hardware.updateDisplay(power_info.c_str(), 10, 30);
+    Hardware.refreshDisplay();
 
-    int retry_cnt = 5;
-    int retry = 0;
-    while (!modem.testAT(1000)) {
-        Serial.println(".");
-        if (retry++ > retry_cnt) {
-            digitalWrite(BOARD_A7682E_PWRKEY, LOW);
-            delay(100);
-            digitalWrite(BOARD_A7682E_PWRKEY, HIGH);
-            delay(1000);
-            digitalWrite(BOARD_A7682E_PWRKEY, LOW);
-
-            Serial.println("[A7682E] Init Fail");
-            break;
-        }
-    }
-    
-    Serial.println();
-    delay(200);
-
-    xTaskCreate(a7682_task, "a7682_handle", 1024 * 3, NULL, A7682E_PRIORITY, &a7682_handle);
-
-    return (retry < retry_cnt);
+    LOG_INFO("Power", "Power management test completed");
 }
 
-static bool pcm5102a_init(void)
-{
-    bool ret = audio.setPinout(BOARD_I2S_BCLK, BOARD_I2S_LRC, BOARD_I2S_DOUT);
+/**
+ * @brief Update system status display
+ */
+void updateStatusDisplay() {
+    uint32_t now = millis();
 
-    if (ret == false) 
-        Serial.printf("[%d] Execution error\n", __LINE__);
-
-    audio.setVolume(21); // 0...21
-
-    pinMode(BOARD_6609_EN, OUTPUT);
-    digitalWrite(BOARD_6609_EN, HIGH);
-
-    // audio_paly_flag = audio.connecttoFS(SD, "/voice_time/BBIBBI.mp3");
-
-    return true;
-}
-
-static void listDir(fs::FS &fs, const char * dirname, uint8_t levels){
-    Serial.printf("Listing spiffs directory: %s\n", dirname);
-
-    File root = fs.open(dirname);
-    if(!root){
-        Serial.println("- failed to open directory");
+    if (now - last_status_update < 10000) { // Update every 10 seconds
         return;
     }
-    if(!root.isDirectory()){
-        Serial.println(" - not a directory");
-        return;
+    last_status_update = now;
+
+    // Get system information
+    String status = "T-Deck-Pro OS\n";
+    status += "Phase 1 Active\n\n";
+    status += "Uptime: " + String((now - boot_time) / 1000) + "s\n";
+
+    // Hardware status
+    if (Hardware.isWiFiConnected()) {
+        status += "WiFi: Connected\n";
+        status += "RSSI: " + String(Hardware.getWiFiRSSI()) + "dBm\n";
+    } else {
+        status += "WiFi: Disconnected\n";
     }
 
-    File file = root.openNextFile();
-    while(file){
-        if(file.isDirectory()){
-            Serial.print("  DIR : ");
-            Serial.println(file.name());
-            if(levels){
-                listDir(fs, file.path(), levels -1);
-            }
-        } else {
-            Serial.print("  FILE: ");
-            Serial.print(file.name());
-            Serial.print("\tSIZE: ");
-            Serial.println(file.size());
-        }
-        file = root.openNextFile();
-    }
+    // Battery info
+    auto battery = Hardware.getBatteryInfo();
+    status += "Battery: " + String(battery.percentage) + "%\n";
+
+    // Power mode
+    status += "Power: Mode " + String((int)Power.getPowerMode()) + "\n";
+
+    // Memory info
+    status += "Free Heap: " + String(ESP.getFreeHeap() / 1024) + "KB\n";
+
+    Hardware.updateDisplay(status.c_str(), 10, 30);
+    Hardware.refreshDisplay();
+
+    LOG_DEBUG("Status", "Status display updated");
 }
 
-void setup()
-{
-    // LORA、SD、EPD use the same SPI, in order to avoid mutual influence;
-    // before powering on, all CS signals should be pulled high and in an unselected state;
-    pinMode(BOARD_EPD_CS, OUTPUT); 
-    digitalWrite(BOARD_EPD_CS, HIGH);
-    pinMode(BOARD_SD_CS, OUTPUT); 
-    digitalWrite(BOARD_SD_CS, HIGH);
-    pinMode(BOARD_LORA_CS, OUTPUT); 
-    digitalWrite(BOARD_LORA_CS, HIGH);
+/**
+ * @brief Arduino setup function
+ */
+void setup() {
+    // Record boot time
+    boot_time = millis();
 
+    // Initialize serial for early debugging
     Serial.begin(115200);
+    delay(1000); // Allow serial to stabilize
 
-    // IO
-    pinMode(BOARD_KEYBOARD_LED, OUTPUT);
-    pinMode(BOARD_MOTOR_PIN, OUTPUT);
-    pinMode(BOARD_6609_EN, OUTPUT);         // enable 7682 module
-    pinMode(BOARD_LORA_EN, OUTPUT);         // enable LORA module
-    pinMode(BOARD_GPS_EN, OUTPUT);          // enable GPS module
-    pinMode(BOARD_1V8_EN, OUTPUT);          // enable gyroscope module
-    pinMode(BOARD_A7682E_PWRKEY, OUTPUT); 
-    digitalWrite(BOARD_KEYBOARD_LED, LOW);
-    digitalWrite(BOARD_MOTOR_PIN, LOW);
-    digitalWrite(BOARD_6609_EN, HIGH);
-    digitalWrite(BOARD_LORA_EN, HIGH);
-    digitalWrite(BOARD_GPS_EN, HIGH);
-    digitalWrite(BOARD_1V8_EN, HIGH);
-    digitalWrite(BOARD_A7682E_PWRKEY, HIGH);
+    Serial.println("\n=== T-Deck-Pro OS Phase 1 ===");
+    Serial.println("Initializing system...");
 
-    // i2c devices
-    byte error, address;
-    int nDevices = 0;
-    Wire.begin(BOARD_I2C_SDA, BOARD_I2C_SCL);
-    Serial.printf(" ------------- I2C ------------- \n");
-    for(address = 0x01; address < 0x7F; address++){
-        Wire.beginTransmission(address);
-        error = Wire.endTransmission();
-        if(error == 0){ // 0: success.
-            nDevices++;
-            if(address == BOARD_I2C_ADDR_TOUCH){
-                // flag_Touch_init = true;
-                Serial.printf("[0x%x] TOUCH find!\n", address);
-            } else if (address == BOARD_I2C_ADDR_LTR_553ALS) {
-                Serial.printf("[0x%x] LTR_553ALS find!\n", address);
-            } else if (address == BOARD_I2C_ADDR_GYROSCOPDE) {
-                Serial.printf("[0x%x] GYROSCOPDE find!\n", address);
-            } else if (address == BOARD_I2C_ADDR_KEYBOARD) {
-                Serial.printf("[0x%x] KEYBOARD find!\n", address);
-            } else if (address == BOARD_I2C_ADDR_BQ27220) {
-                Serial.printf("[0x%x] BQ27220 find!\n", address);
-            } else if (address == BOARD_I2C_ADDR_BQ25896) {
-                Serial.printf("[0x%x] BQ25896 find!\n", address);
-            }
+    // Initialize the system
+    if (!initializeSystem()) {
+        Serial.println("FATAL: System initialization failed!");
+        Serial.println("System will halt.");
+
+        // Try to show error on display if possible
+        Hardware.updateDisplay("SYSTEM INIT\nFAILED!\n\nCheck Serial\nfor details", 10, 30);
+        Hardware.refreshDisplay();
+
+        // Halt system
+        while (true) {
+            delay(1000);
         }
     }
 
-    Serial.printf(" ------------- SPIFFS ------------- \n");
+    system_initialized = true;
 
-    if(!SPIFFS.begin(true)){
-        Serial.println("SPIFFS Mount Failed");
+    // Set power mode to balanced for normal operation
+    Power.setPowerMode(PowerMode::BALANCED);
+
+    // Test WiFi connection (optional - comment out if no WiFi available)
+    // testWiFiConnection();
+
+    // Test power management
+    testPowerManagement();
+
+    LOG_INFO("System", "Setup completed successfully");
+    LOG_INFO("System", "Entering main loop...");
+}
+
+/**
+ * @brief Arduino main loop function
+ */
+void loop() {
+    if (!system_initialized) {
+        delay(100);
         return;
     }
 
-    listDir(SPIFFS, "/", 0);
-    Serial.println(" ------------- PERI ------------- ");
+    // Update core system components
+    Hardware.update();
+    Power.update();
 
-    // SPI
-    SPI.begin(BOARD_SPI_SCK, BOARD_SPI_MISO, BOARD_SPI_MOSI);
+    // Handle touch input
+    TouchEvent touch_event = Hardware.getTouchEvent();
+    if (touch_event.pressed) {
+        LOG_INFO("Touch", "Touch detected at (%d, %d)", touch_event.x, touch_event.y);
 
-    // init peripheral
-    touch.setPins(BOARD_TOUCH_RST, BOARD_TOUCH_INT);
-    peri_init_st[E_PERI_INK_SCREEN] = ink_screen_init();
-    peri_init_st[E_PERI_LORA]       = lora_init();
-    peri_init_st[E_PERI_TOUCH]      = touch.begin(Wire, BOARD_I2C_ADDR_TOUCH, BOARD_TOUCH_SDA, BOARD_TOUCH_SCL);
-    peri_init_st[E_PERI_KYEPAD]     = keypad_init(BOARD_I2C_ADDR_KEYBOARD);
-    peri_init_st[E_PERI_BQ25896]    = bq25896_init();
-    peri_init_st[E_PERI_BQ27220]    = bq27220_init();
-    peri_init_st[E_PERI_SD]         = sd_care_init();
-    peri_init_st[E_PERI_GPS]        = gps_init();
-    peri_init_st[E_PERI_BHI260AP]   = BHI260AP_init();
-    peri_init_st[E_PERI_LTR_553ALS] = LTR553_init();
-    peri_init_st[E_PERI_A7682E]     = A7682E_init();
+        // Reset idle timer on user activity
+        Power.resetIdleTimer();
 
-    if(peri_init_st[E_PERI_A7682E] == false)
-    {
-        peri_init_st[E_PERI_PCM5102A] = pcm5102a_init();
+        // Simple touch response - cycle through power modes
+        static int power_mode_index = 0;
+        PowerMode modes[] = {PowerMode::HIGH_PERFORMANCE, PowerMode::BALANCED, PowerMode::POWER_SAVE, PowerMode::ULTRA_LOW_POWER};
+
+        power_mode_index = (power_mode_index + 1) % 4;
+        Power.setPowerMode(modes[power_mode_index]);
+
+        LOG_INFO("Touch", "Switched to power mode %d", power_mode_index);
     }
 
-    lvgl_init();
+    // Update status display periodically
+    updateStatusDisplay();
 
-    ui_deckpro_entry();
+    // Check for any key input (if keyboard is available)
+    char key = Hardware.getKeyInput();
+    if (key != 0) {
+        LOG_INFO("Keyboard", "Key pressed: %c", key);
+        Power.resetIdleTimer();
 
-    disp_full_refr();
-}
-
-void loop()
-{
-    lv_task_handler();
-    keypad_loop();
-
-    if(peri_init_st[E_PERI_PCM5102A] == true) 
-    {
-        audio.loop();
+        // Handle special keys
+        switch (key) {
+            case 'r': // Reset statistics
+                Power.resetStats();
+                LOG_INFO("System", "Statistics reset");
+                break;
+            case 'w': // Test WiFi
+                testWiFiConnection();
+                break;
+            case 'p': // Test power management
+                testPowerManagement();
+                break;
+            case 's': // Enter light sleep for 10 seconds
+                LOG_INFO("System", "Entering light sleep for 10 seconds...");
+                Hardware.updateDisplay("Sleeping for\n10 seconds...", 10, 30);
+                Hardware.refreshDisplay();
+                Power.enterLightSleep(10000);
+                break;
+        }
     }
-    
-    delay(1);
+
+    // Small delay to prevent overwhelming the system
+    delay(50);
 }
 
-/*********************************************************************************
- *                              GLOBAL PROTOTYPES
- * *******************************************************************************/
-void disp_full_refr(void)
-{
-    disp_refr_mode = DISP_REFR_MODE_FULL;
-}
-
-
+/**
+ * @brief Phase 1 Implementation Notes:
+ *
+ * This is the Phase 1 implementation of T-Deck-Pro OS focusing on:
+ * 1. Hardware Abstraction Layer (HAL) - Unified hardware interface
+ * 2. Unified Logging System - Multi-output logging (Serial, SD, MQTT)
+ * 3. Robust WiFi Management - Connection handling with retry logic
+ * 4. Basic Power Management - ESP32-S3 power optimization
+ * 5. Updated Library Dependencies - AsyncMqttClient, LittleFS, etc.
+ *
+ * Next phases will add:
+ * - Phase 2: Core Services (MQTT, WireGuard, Boot Manager, Plugin Manager)
+ * - Phase 3: Storage & Configuration System
+ * - Phase 4: UI/UX Framework with LVGL optimization
+ * - Phase 5: Application Framework
+ * - Phase 6: Optimization & Production
+ *
+ * Usage:
+ * - Touch screen to cycle through power modes
+ * - Use keyboard keys: 'r' (reset stats), 'w' (test WiFi), 'p' (power test), 's' (sleep)
+ * - Monitor serial output for detailed logging
+ * - Status updates on e-paper display every 10 seconds
+ */
