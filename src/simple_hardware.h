@@ -18,6 +18,7 @@
 #include <GxEPD2_BW.h>
 #include <TouchDrvCSTXXX.hpp>
 #include "utilities.h"
+#include "lvgl_integration.h"
 
 enum HardwareStatus {
     HW_NOT_INITIALIZED,
@@ -90,6 +91,11 @@ public:
     bool refreshDisplay(bool full_refresh = false);
     void clearDisplay();
     void displayStatus();
+
+    // LVGL integration
+    bool initLVGL();
+    void updateLVGL();
+    bool isLVGLReady();
     
     // Touch input
     TouchPoint getTouchInput();

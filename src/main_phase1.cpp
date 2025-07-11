@@ -27,19 +27,19 @@ const char* test_wifi_password = "YourPassword";
  * @brief Initialize the T-Deck-Pro OS system
  */
 bool initializeSystem() {
-    LOG_INFO("System", "=== T-Deck-Pro OS Phase 1 ===");
-    LOG_INFO("System", "Starting system initialization...");
-    
-    // Initialize logger first
+    // Initialize logger first - BEFORE using any LOG macros
     SimpleLogger* logger = SimpleLogger::getInstance();
     if (!logger->init(LOG_INFO)) {
-        Serial.println("FATAL: Logger initialization failed");
+        Serial.println("ERROR: Failed to initialize logger");
         return false;
     }
-    
+
+    LOG_INFO("System", "=== T-Deck-Pro OS Phase 1 ===");
+    LOG_INFO("System", "Starting system initialization...");
+
     // Enable SD card logging if available
     logger->enableSD(true, "/logs/phase1.log");
-    
+
     LOG_INFO("System", "Logger initialized successfully");
     
     // Initialize hardware manager
@@ -73,6 +73,7 @@ bool initializeSystem() {
     // Display welcome message
     String welcome = "T-Deck-Pro OS\nPhase 1 Active\n\nSystem Ready!\n\nTouch screen to\ninteract";
     hardware->updateDisplay(welcome.c_str(), 10, 30);
+    // Initial display refresh is OK
     hardware->refreshDisplay(true);
     
     LOG_INFO("System", "System initialization completed successfully");
@@ -97,12 +98,12 @@ void testWiFiConnection() {
         }
         
         Hardware->updateDisplay(scan_result.c_str(), 10, 30);
-        Hardware->refreshDisplay(true);
-        
+        // Don't refresh immediately - let main loop handle it
+
         LOG_INFOF("WiFi", "Found %d networks", network_count);
     } else {
         Hardware->updateDisplay("No WiFi networks\nfound", 10, 30);
-        Hardware->refreshDisplay(true);
+        // Don't refresh immediately - let main loop handle it
         LOG_WARN("WiFi", "No WiFi networks found");
     }
     
@@ -136,7 +137,7 @@ void testPowerManagement() {
     power_info += "Free PSRAM: " + String(stats.free_psram_kb) + "KB\n";
     
     Hardware->updateDisplay(power_info.c_str(), 10, 30);
-    Hardware->refreshDisplay(true);
+    // Don't refresh immediately - let main loop handle it
     
     Power->printPowerInfo();
     LOG_INFO("Power", "Power management test completed");
@@ -147,14 +148,15 @@ void testPowerManagement() {
  */
 void updateStatusDisplay() {
     uint32_t now = millis();
-    
+
+    // Update display content every 10 seconds, but refresh much less frequently
     if (now - last_status_update < 10000) { // Update every 10 seconds
         return;
     }
     last_status_update = now;
-    
+
     String status = Hardware->getSystemInfo();
-    
+
     // Add touch status
     TouchPoint touch = Hardware->getTouchInput();
     if (touch.pressed) {
@@ -162,17 +164,20 @@ void updateStatusDisplay() {
     } else {
         status += "Touch: Released\n";
     }
-    
+
     // Add power mode
     status += "Power: " + String(Power->getPowerModeString()) + "\n";
-    
+
     // Add idle time
     uint32_t idle_time = Power->getIdleTime() / 1000;
     status += "Idle: " + String(idle_time) + "s\n";
-    
+
+    // Update display buffer but don't refresh automatically
+    // Only refresh on user interaction to avoid constant refreshing
     Hardware->updateDisplay(status.c_str(), 10, 30);
-    Hardware->refreshDisplay(false); // Partial refresh for status updates
-    
+
+    // Note: Display refresh is now handled only in touch handler
+
     LOG_DEBUG("Status", "Status display updated");
 }
 
@@ -181,15 +186,20 @@ void updateStatusDisplay() {
  */
 void handleTouchInput() {
     TouchPoint touch = Hardware->getTouchInput();
-    
+
     if (touch.pressed && (millis() - last_touch_time > 1000)) { // Debounce 1 second
         last_touch_time = millis();
-        
+
         LOG_INFOF("Touch", "Touch detected at (%d, %d)", touch.x, touch.y);
-        
+
         // Reset idle timer on user activity
         Power->resetIdleTimer();
-        
+
+        // Force a display refresh on user interaction (with minimal debounce)
+        static uint32_t last_touch_refresh = 0;
+        uint32_t now = millis();
+        bool should_refresh = (now - last_touch_refresh > 2000); // 2 second minimum between touch refreshes
+
         // Simple touch response - cycle through different functions
         static int touch_action = 0;
         touch_action = (touch_action + 1) % 4;
@@ -217,11 +227,18 @@ void handleTouchInput() {
                     
                     String mode_msg = "Power Mode:\n" + String(Power->getPowerModeString());
                     Hardware->updateDisplay(mode_msg.c_str(), 10, 30);
-                    Hardware->refreshDisplay(true);
+                    // Don't refresh immediately - let the main loop handle it
                     
                     LOG_INFOF("Touch", "Switched to power mode: %s", Power->getPowerModeString());
                 }
                 break;
+        }
+
+        // Refresh display if enough time has passed since last touch refresh
+        if (should_refresh) {
+            Hardware->refreshDisplay(false); // Partial refresh for user interactions
+            last_touch_refresh = now;
+            LOG_DEBUG("Touch", "Display refreshed due to user interaction");
         }
     }
 }

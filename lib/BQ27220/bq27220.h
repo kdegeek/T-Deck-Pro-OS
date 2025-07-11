@@ -8,8 +8,24 @@
 #include "bq27220_def.h"
 #include "bq27220_data_memory.h"
 
-#define DEFAULT_SCL  40
-#define DEFAULT_SDA  39
+// Define BQ27220-specific I2C pins only if not already defined
+// This avoids conflicts with SensorLib which also defines DEFAULT_SDA/SCL
+#ifndef BQ27220_DEFAULT_SCL
+#define BQ27220_DEFAULT_SCL  40
+#endif
+
+#ifndef BQ27220_DEFAULT_SDA
+#define BQ27220_DEFAULT_SDA  39
+#endif
+
+// For backward compatibility, define DEFAULT_SCL/SDA only if not already defined
+#ifndef DEFAULT_SCL
+#define DEFAULT_SCL  BQ27220_DEFAULT_SCL
+#endif
+
+#ifndef DEFAULT_SDA
+#define DEFAULT_SDA  BQ27220_DEFAULT_SDA
+#endif
 
 typedef union ControlStatus{
     struct __reg
