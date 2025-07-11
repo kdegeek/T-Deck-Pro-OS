@@ -108,7 +108,7 @@
 
 // ===== FEATURE FLAGS =====
 #define FEATURE_MQTT_ENABLED true
-#define FEATURE_TAILSCALE_ENABLED false  // Future feature
+#define FEATURE_WIREGUARD_ENABLED false  // WireGuard VPN support
 #define FEATURE_MESHTASTIC_ENABLED true
 #define FEATURE_FILE_MANAGER_ENABLED true
 #define FEATURE_SETTINGS_ENABLED true

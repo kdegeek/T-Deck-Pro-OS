@@ -17,7 +17,7 @@ The T-Deck-Pro OS has been redesigned with a **simplified, integrated architectu
 
 ### 🌐 **Communication Services**
 - **MQTT Integration**: Real-time communication with configurable broker
-- **Tailscale VPN**: Secure networking with mesh capabilities
+- **WireGuard VPN**: Secure networking with modern VPN capabilities
 - **Remote App Launch**: MQTT-based application launching
 - **System Telemetry**: Automatic status and health reporting
 - **Connectivity Management**: Unified network service handling
@@ -52,7 +52,7 @@ T-Deck-Pro OS - Simplified Architecture
 │   ├── boot_manager.h (Boot sequence)
 │   ├── launcher.h (UI and app grid)
 │   ├── mqtt_manager.h/cpp (MQTT communication)
-│   ├── tailscale_manager.h/cpp (VPN networking)
+│   ├── wireguard_manager.h/cpp (VPN networking)
 │   └── plugin_manager.h/cpp (SD app management)
 └── Applications (SD Card Plugins)
     ├── file_manager_app.h/cpp
@@ -124,7 +124,7 @@ pio device monitor
 ### **Boot Sequence**
 1. Hardware initialization and self-test
 2. Boot manager system startup
-3. Core services initialization (MQTT, Tailscale)
+3. Core services initialization (MQTT, WireGuard)
 4. Plugin discovery from SD card
 5. Launcher interface startup
 6. System ready for user interaction
@@ -164,7 +164,7 @@ The launcher provides a simple, efficient interface:
 
 #### **Settings App**
 - System configuration
-- Network settings (WiFi, MQTT, Tailscale)
+- Network settings (WiFi, MQTT, WireGuard)
 - Hardware preferences
 - Plugin management
 
@@ -177,11 +177,11 @@ The launcher provides a simple, efficient interface:
 - **Status Updates**: Real-time system status broadcasting
 - **Simple Protocol**: Lightweight message format
 
-### **Tailscale VPN**
-- **Secure Networking**: Encrypted mesh networking
-- **Easy Setup**: Simple configuration through settings
-- **Remote Access**: Secure remote device management
-- **Mesh Capabilities**: Connect multiple devices securely
+### **WireGuard VPN**
+- **Modern Security**: State-of-the-art cryptography and protocols
+- **High Performance**: Minimal overhead and fast connections
+- **Simple Configuration**: Easy setup through settings interface
+- **Cross-Platform**: Compatible with all major operating systems
 
 ### **MQTT Topics**
 ```
@@ -207,7 +207,7 @@ T-Deck-Pro-OS/
 │   │   ├── boot_manager.h        # Boot sequence
 │   │   ├── launcher.h            # UI launcher
 │   │   ├── mqtt_manager.h/cpp    # MQTT communication
-│   │   ├── tailscale_manager.h/cpp # VPN networking
+│   │   ├── wireguard_manager.h/cpp # VPN networking
 │   │   └── plugin_manager.h/cpp  # Plugin system
 │   └── apps/                     # Application plugins
 │       ├── file_manager_app.h/cpp
@@ -367,7 +367,7 @@ pio device monitor
 - ✅ **Easy Development**: Straightforward codebase, easy to understand
 - ✅ **Plugin System**: SD card apps with automatic discovery
 - ✅ **Efficient Design**: Minimal resource usage, maximum functionality
-- ✅ **Modern Networking**: MQTT and Tailscale integration
+- ✅ **Modern Networking**: MQTT and WireGuard integration
 
 ### **Developer Friendly**
 - ✅ **Simple Build**: Minimal configuration, fast compilation
